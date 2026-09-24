@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type Express, type Request, type Response } from 'express';
-import type { Config } from './config.js';
+import type { Config } from './config.ts';
 
 // Resolves to `src/public` in dev (running src/*.ts directly) and to
 // `dist/public` once built, since `npm run build` copies `src/public` there
