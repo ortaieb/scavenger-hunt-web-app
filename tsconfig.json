@@ -6,6 +6,10 @@
     "moduleResolution": "NodeNext",
     "rootDir": "src",
     "outDir": "dist",
+    // Source imports use .ts extensions (below) so `node --watch src/index.ts`
+    // can resolve them directly; tsc rewrites them to .js on emit, which is
+    // what NodeNext resolution requires from the compiled output.
+    "rewriteRelativeImportExtensions": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
