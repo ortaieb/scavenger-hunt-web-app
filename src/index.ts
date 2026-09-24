@@ -1,6 +1,6 @@
-import { createApp } from './app.ts';
-import { loadConfig } from './config.ts';
-import { createServer } from './server.ts';
+import { createApp } from './app.js';
+import { loadConfig } from './config.js';
+import { createServer } from './server.js';
 
 const config = loadConfig();
 const app = createApp(config);

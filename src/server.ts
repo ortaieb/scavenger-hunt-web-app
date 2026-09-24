@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { Express } from 'express';
-import type { Config } from './config.ts';
+import type { Config } from './config.js';
 
 /**
  * Camera and geolocation APIs require a secure context, so any host other
