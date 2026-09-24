@@ -1,0 +1,36 @@
+{
+  "name": "scavenger-hunt-web-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Scavenger Hunt web application",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist .tsbuildinfo",
+    "start": "node dist/index.js",
+    "dev": "node --watch src/index.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.36.0",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.5.2",
+    "@types/supertest": "^6.0.3",
+    "eslint": "^9.36.0",
+    "supertest": "^7.1.4",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.44.1",
+    "vitest": "^5.0.1"
+  }
+}
