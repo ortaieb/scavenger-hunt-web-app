@@ -30,4 +30,9 @@ EXPOSE 3000
 # The distroless image already runs as the unprivileged `nonroot` user (65532).
 USER nonroot
 # `node` is the image entrypoint, so CMD only carries the script path.
+#
+# The camera/geolocation APIs the /challenge page uses require HTTPS (or
+# localhost). This image serves plain HTTP by default; mount a real
+# certificate and set TLS_KEY_PATH/TLS_CERT_PATH to serve HTTPS directly, or
+# terminate TLS at a reverse proxy in front of it.
 CMD ["dist/index.js"]
