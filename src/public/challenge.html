@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Scavenger Hunt — Challenge</title>
+    <link rel="stylesheet" href="/challenge.css" />
+  </head>
+  <body>
+    <main class="challenge">
+      <h1>Capture your challenge</h1>
+      <p id="status" class="status" role="status">Starting camera…</p>
+
+      <div class="camera-frame">
+        <video id="preview" autoplay playsinline muted></video>
+        <canvas id="snapshot" hidden></canvas>
+        <img id="photo" alt="Captured photo" hidden />
+      </div>
+
+      <div class="controls">
+        <button id="capture" type="button">Take photo</button>
+        <button id="retake" type="button" hidden>Retake</button>
+        <button id="submit" type="button" hidden>Submit</button>
+      </div>
+
+      <dl class="location">
+        <dt>Location</dt>
+        <dd id="location">Not captured yet</dd>
+      </dl>
+    </main>
+
+    <script type="module" src="/challenge.js"></script>
+  </body>
+</html>
