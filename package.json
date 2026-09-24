@@ -10,10 +10,11 @@
   },
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r src/public dist/public",
     "clean": "rm -rf dist .tsbuildinfo",
     "start": "node dist/index.js",
     "dev": "node --watch src/index.ts",
+    "certs:dev": "scripts/generate-dev-certs.sh",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",

@@ -21,4 +21,22 @@ export default tseslint.config(
     files: ['**/*.js'],
     ...tseslint.configs.disableTypeChecked,
   },
+  {
+    // Plain vanilla JS served as-is to the browser from /challenge — not
+    // part of the Node/TypeScript build.
+    files: ['src/public/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        navigator: 'readonly',
+        fetch: 'readonly',
+        FormData: 'readonly',
+        URL: 'readonly',
+        console: 'readonly',
+      },
+    },
+  },
 );
