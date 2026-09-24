@@ -1,9 +1,14 @@
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
+import { createServer } from './server.js';
 
-const { port, host } = loadConfig();
-const server = createApp().listen(port, host, () => {
-  console.log(`scavenger-hunt-web-app listening on http://${host}:${port}`);
+const config = loadConfig();
+const app = createApp(config);
+const server = createServer(app, config);
+
+server.listen(config.port, config.host, () => {
+  const scheme = config.tls ? 'https' : 'http';
+  console.log(`scavenger-hunt-web-app listening on ${scheme}://${config.host}:${config.port}`);
 });
 
 // Containers stop with a signal; close the listener so in-flight requests finish.
