@@ -19,6 +19,10 @@
 # misc
 .DS_Store
 *.pem
+!tests/fixtures/*.pem
+
+# self-signed dev TLS certs (see scripts/generate-dev-certs.sh)
+/certs
 
 # debug
 npm-debug.log*
