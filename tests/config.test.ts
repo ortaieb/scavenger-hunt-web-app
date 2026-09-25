@@ -3,10 +3,12 @@ import { loadConfig } from '../src/config.js';
 
 describe('loadConfig', () => {
   it('falls back to defaults when nothing is set', () => {
-    expect(loadConfig({})).toEqual({
+    // fileExists: () => false keeps this deterministic regardless of whether
+    // a real certs/dev-*.pem exists on the machine running the test.
+    expect(loadConfig({}, { fileExists: () => false })).toEqual({
       port: 3000,
       host: '0.0.0.0',
-      backendUploadUrl: 'http://localhost:8000/api/challenge/uploads',
+      gameServerUrl: 'http://localhost:8000',
     });
   });
 
@@ -25,9 +27,9 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ PORT: '70000' })).toThrow(/Invalid PORT/);
   });
 
-  it('reads BACKEND_UPLOAD_URL from the environment', () => {
-    expect(loadConfig({ BACKEND_UPLOAD_URL: 'http://backend.test/uploads' })).toMatchObject({
-      backendUploadUrl: 'http://backend.test/uploads',
+  it('reads GAME_SERVER_URL from the environment', () => {
+    expect(loadConfig({ GAME_SERVER_URL: 'http://game-server.test' })).toMatchObject({
+      gameServerUrl: 'http://game-server.test',
     });
   });
 

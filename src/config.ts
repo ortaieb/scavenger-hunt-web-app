@@ -9,15 +9,16 @@ export interface TlsConfig {
 export interface Config {
   port: number;
   host: string;
-  backendUploadUrl: string;
+  gameServerUrl: string;
   tls?: TlsConfig;
 }
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_HOST = '0.0.0.0';
-// The FastAPI backend is built separately (see issue #3); this default keeps
-// `npm run dev` usable out of the box and should be overridden once it exists.
-const DEFAULT_BACKEND_UPLOAD_URL = 'http://localhost:8000/api/challenge/uploads';
+// The game-server is a separate service (see issue #7); POST /challenge
+// relays captures to `${gameServerUrl}/challenge`. Override with
+// GAME_SERVER_URL (directly, or via a .env file) once it's not on localhost.
+const DEFAULT_GAME_SERVER_URL = 'http://localhost:8000';
 
 export interface ConfigDeps {
   /** Directory checked for an auto-generated dev certificate. */
@@ -62,7 +63,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, deps: ConfigDep
   return {
     port,
     host: env.HOST ?? DEFAULT_HOST,
-    backendUploadUrl: env.BACKEND_UPLOAD_URL ?? DEFAULT_BACKEND_UPLOAD_URL,
+    gameServerUrl: env.GAME_SERVER_URL ?? DEFAULT_GAME_SERVER_URL,
     tls: resolveTls(env, deps),
   };
 }
