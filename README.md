@@ -21,10 +21,22 @@ npm run dev        # watch mode, http://localhost:3000
 `GET /challenge` serves an in-app photo + location capture page: it renders
 the device camera directly on the page via `getUserMedia` (no native picker,
 so there's no gallery-upload option), lets the player take and retake a
-shot, then reads their location and uploads both to a backend. The upload
-target is fetched from `GET /api/challenge/config` at submit time, so the
-backend (a separate FastAPI service, not part of this repo) can move without
-a redeploy of this page.
+shot, then reads their location and submits both.
+
+`POST /challenge` receives that submission (`image`, `latitude`, `longitude`,
+`capturedAt`) and relays it to the game-server (a separate service, not part
+of this repo) as `multipart/form-data`:
+
+- `metadata` — a JSON string: `{"session","participant","location":{"lat","long"},"capture-time"}`.
+  `session`/`participant` are sent as `"n/a"` for now.
+- `challenge-image` — the captured JPEG.
+
+The browser posts to this app's own `/challenge`, not the game-server
+directly: this app runs over HTTPS off `localhost` (required for the camera
+API, see below), and the game-server isn't guaranteed to serve HTTPS or
+allow our origin via CORS, so the request has to go server-to-server. The
+client shows "challenge was sent" on a `200`, or the status code and error
+body otherwise.
 
 Camera and geolocation only work in a "secure context": HTTPS, or plain HTTP
 on `localhost`. To try `/challenge` from a phone over the LAN (not
@@ -51,13 +63,16 @@ Accept the self-signed certificate warning in the browser to continue.
 
 ## Configuration
 
-| Variable            | Default                                          | Description                                             |
-| ------------------- | ------------------------------------------------- | -------------------------------------------------------- |
-| `PORT`              | `3000`                                            | Port the server binds to                                  |
-| `HOST`              | `0.0.0.0`                                         | Interface to bind to                                      |
-| `BACKEND_UPLOAD_URL`| `http://localhost:8000/api/challenge/uploads`     | Where `/challenge` uploads captures to (the FastAPI backend) |
-| `TLS_KEY_PATH`      | —                                                  | Path to a TLS private key; must be set with `TLS_CERT_PATH` |
-| `TLS_CERT_PATH`     | —                                                  | Path to a TLS certificate; must be set with `TLS_KEY_PATH`  |
+| Variable          | Default                 | Description                                                    |
+| ----------------- | ------------------------ | ---------------------------------------------------------------- |
+| `PORT`            | `3000`                   | Port the server binds to                                          |
+| `HOST`            | `0.0.0.0`                | Interface to bind to                                              |
+| `GAME_SERVER_URL` | `http://localhost:8000` | Base URL of the game-server; `POST /challenge` relays to `<this>/challenge` |
+| `TLS_KEY_PATH`    | —                        | Path to a TLS private key; must be set with `TLS_CERT_PATH`       |
+| `TLS_CERT_PATH`   | —                        | Path to a TLS certificate; must be set with `TLS_KEY_PATH`        |
+
+Copy `.env.example` to `.env` to override any of these locally — it's loaded
+automatically (and gitignored).
 
 An out-of-range or non-numeric `PORT` fails fast at startup, as does setting
 only one of `TLS_KEY_PATH`/`TLS_CERT_PATH`.

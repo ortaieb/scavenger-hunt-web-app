@@ -1,3 +1,7 @@
+// Must run before loadConfig() reads process.env; populates it from a .env
+// file if one exists (e.g. to override GAME_SERVER_URL), a no-op otherwise.
+import 'dotenv/config';
+
 import { createApp } from './app.ts';
 import { loadConfig } from './config.ts';
 import { createServer } from './server.ts';

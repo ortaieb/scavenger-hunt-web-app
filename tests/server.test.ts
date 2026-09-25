@@ -8,7 +8,7 @@ import { createServer } from '../src/server.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixturesDir = path.join(__dirname, 'fixtures');
-const testConfig = { backendUploadUrl: 'http://backend.test/uploads' };
+const testConfig = { gameServerUrl: 'http://game-server.test' };
 
 describe('createServer', () => {
   it('returns a plain HTTP server when no TLS config is set', () => {
