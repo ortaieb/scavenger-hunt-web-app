@@ -130,28 +130,25 @@ async function submitCapture() {
   }
 
   submitBtn.disabled = true;
-  setStatus('Uploading…');
+  setStatus('Sending…');
 
   try {
-    const configRes = await fetch('/api/challenge/config');
-    if (!configRes.ok) {
-      throw new Error(`config request failed (${configRes.status})`);
-    }
-    const { uploadUrl } = await configRes.json();
-
     const form = new FormData();
     form.append('image', capturedBlob, 'challenge.jpg');
     form.append('latitude', String(position.coords.latitude));
     form.append('longitude', String(position.coords.longitude));
-    form.append('accuracy', String(position.coords.accuracy));
     form.append('capturedAt', new Date(position.timestamp).toISOString());
 
-    const uploadRes = await fetch(uploadUrl, { method: 'POST', body: form });
-    if (!uploadRes.ok) {
-      throw new Error(`upload failed (${uploadRes.status})`);
-    }
+    // Posted to this app's own /challenge, same-origin — not the game-server
+    // directly, which the browser can't safely reach (see issue #7).
+    const response = await fetch('/challenge', { method: 'POST', body: form });
 
-    setStatus('Uploaded! Thanks.');
+    if (response.status === 200) {
+      setStatus('challenge was sent');
+    } else {
+      const body = await response.text().catch(() => '');
+      setStatus(`Error ${response.status}: ${body || response.statusText}`);
+    }
   } catch (err) {
     setStatus(`Upload failed: ${describeError(err)}`);
   } finally {
