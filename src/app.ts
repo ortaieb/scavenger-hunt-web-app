@@ -70,8 +70,8 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
 
     // session/participant are left as "n/a" at this stage (see issue #7).
     const metadata = {
-      session: 'n/a',
-      participant: 'n/a',
+      session: '00000000-0000-0000-0000-000000000000',
+      participant: '00000000-0000-0000-0001-000000000001',
       location: { lat: Number(latitude), long: Number(longitude) },
       'capture-time': capturedAt,
     };
