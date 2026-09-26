@@ -143,7 +143,10 @@ async function submitCapture() {
     // directly, which the browser can't safely reach (see issue #7).
     const response = await fetch('/challenge', { method: 'POST', body: form });
 
-    if (response.status === 200) {
+    // The game-server's happy path is 202 Accepted (the submission is
+    // queued, not synchronously processed); a plain 200 is treated the same
+    // way in case that ever changes (see issue #10).
+    if (response.status === 200 || response.status === 202) {
       setStatus('challenge was sent');
     } else {
       const body = await response.text().catch(() => '');
