@@ -39,6 +39,7 @@ export default tseslint.config(
         AbortController: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
+        crypto: 'readonly',
         console: 'readonly',
       },
     },
