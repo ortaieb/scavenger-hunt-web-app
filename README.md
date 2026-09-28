@@ -60,6 +60,28 @@ directly: this app runs over HTTPS off `localhost` (required for the camera
 API, see below), and the game-server isn't guaranteed to serve HTTPS or
 allow our origin via CORS, so the request has to go server-to-server.
 
+#### Courtesy out-of-range warning
+
+Once a location fix is available, the page calls `POST /checkpoint/proximity`
+(this app's own relay, for the same HTTPS/CORS reasons as `/challenge`;
+forwards `{session, participant, checkpoint, location}` to
+`${GAME_SERVER_URL}/checkpoint/proximity` unchanged and passes the status
+and body straight back) once per fix. **This is a courtesy, not a check —
+it never blocks Submit**, and the game-server's `/challenge` verdict is the
+only thing that counts:
+
+- `in_range: false` → a non-blocking warning near the location line ("You
+  may be outside the checkpoint area. You can still submit.")
+- `in_range: true` → no warning
+- `429`, `404`, a network error, or no response within ~3s → shown nothing;
+  the hint never gets in the way
+
+There's also a purely local hint, no server call: if `coords.accuracy` is
+over 50m, "Your location fix is imprecise…" appears alongside it. Neither
+hint — nor anything else in this app — ever sees or computes the
+checkpoint's actual coordinates, a distance, or a radius; the game-server
+only ever answers `in_range: true|false`.
+
 Camera and geolocation only work in a "secure context": HTTPS, or plain HTTP
 on `localhost`. To try `/challenge` from a phone over the LAN (not
 `localhost`), generate a local HTTPS certificate first:
@@ -113,7 +135,7 @@ src/
   config.ts    environment parsing and validation
   server.ts    HTTP/HTTPS server construction
   public/      static assets for /challenge (html, css, client js)
-    challenge-logic.js  pure identity/verdict logic, unit tested directly
+    challenge-logic.js  pure identity/verdict/hint logic, unit tested directly
     challenge.js        DOM/camera/fetch wiring, imports challenge-logic.js
 scripts/       dev tooling (self-signed cert generation)
 tests/         Vitest suites
