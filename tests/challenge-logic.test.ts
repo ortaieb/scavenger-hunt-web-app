@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { describeVerdict, readIdentityFromQuery } from '../src/public/challenge-logic.js';
+import {
+  describeAccuracyHint,
+  describeProximityWarning,
+  describeVerdict,
+  readIdentityFromQuery,
+} from '../src/public/challenge-logic.js';
 
 const VALID_SESSION = '11111111-1111-4111-8111-111111111111';
 const VALID_PARTICIPANT = '22222222-2222-4222-8222-222222222222';
@@ -108,5 +113,55 @@ describe('describeVerdict', () => {
   it('handles a malformed JSON body without throwing', () => {
     expect(() => describeVerdict(202, 'not json')).not.toThrow();
     expect(() => describeVerdict(200, 'not json')).not.toThrow();
+  });
+});
+
+describe('describeAccuracyHint', () => {
+  it('returns nothing at or below 50m', () => {
+    expect(describeAccuracyHint(50)).toBe('');
+    expect(describeAccuracyHint(10)).toBe('');
+  });
+
+  it('warns above 50m, rounding the value', () => {
+    expect(describeAccuracyHint(51)).toBe(
+      'Your location fix is imprecise (±51 m); try moving into the open.',
+    );
+    expect(describeAccuracyHint(123.6)).toContain('±124 m');
+  });
+
+  it('returns nothing for a non-finite accuracy', () => {
+    expect(describeAccuracyHint(Number.NaN)).toBe('');
+    expect(describeAccuracyHint(Number.POSITIVE_INFINITY)).toBe('');
+  });
+});
+
+describe('describeProximityWarning', () => {
+  it('warns when in_range is false', () => {
+    expect(describeProximityWarning(200, { in_range: false })).toBe(
+      'You may be outside the checkpoint area. You can still submit.',
+    );
+  });
+
+  it('says nothing when in_range is true', () => {
+    expect(describeProximityWarning(200, { in_range: true })).toBe('');
+  });
+
+  it.each([429, 404, 500, 502])('says nothing for a %i response', (status) => {
+    expect(describeProximityWarning(status, { in_range: false })).toBe('');
+  });
+
+  it('says nothing when the body is missing, null or malformed', () => {
+    expect(describeProximityWarning(200, null)).toBe('');
+    expect(describeProximityWarning(200, undefined)).toBe('');
+    expect(describeProximityWarning(200, {})).toBe('');
+    expect(describeProximityWarning(200, 'not an object')).toBe('');
+  });
+
+  it('never mentions coordinates, distance or a radius', () => {
+    const result = describeProximityWarning(200, { in_range: false });
+
+    for (const forbidden of ['lat', 'lon', 'distance', 'radius', 'meter']) {
+      expect(result.toLowerCase()).not.toContain(forbidden);
+    }
   });
 });
