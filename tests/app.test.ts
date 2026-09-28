@@ -6,6 +6,10 @@ const testConfig = { gameServerUrl: 'http://game-server.test' };
 
 const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 
+const VALID_SESSION = '11111111-1111-4111-8111-111111111111';
+const VALID_PARTICIPANT = '22222222-2222-4222-8222-222222222222';
+const VALID_CHECKPOINT = '2';
+
 interface ErrorBody {
   error: string;
 }
@@ -43,13 +47,24 @@ describe('GET /challenge.js', () => {
 });
 
 describe('POST /challenge', () => {
-  function postChallenge(app: ReturnType<typeof createApp>) {
-    return request(app)
-      .post('/challenge')
-      .field('latitude', '51.509948')
-      .field('longitude', '-1.485923')
-      .field('capturedAt', '2012-03-29T10:05:45-06:00')
-      .attach('image', jpegBytes, { filename: 'photo.jpg', contentType: 'image/jpeg' });
+  const validFields: Record<string, string> = {
+    session: VALID_SESSION,
+    participant: VALID_PARTICIPANT,
+    checkpoint: VALID_CHECKPOINT,
+    latitude: '51.509948',
+    longitude: '-1.485923',
+    capturedAt: '2012-03-29T10:05:45-06:00',
+  };
+
+  function postChallenge(app: ReturnType<typeof createApp>, fields: Record<string, string | undefined> = {}) {
+    const merged = { ...validFields, ...fields };
+    let req = request(app).post('/challenge');
+    for (const [key, value] of Object.entries(merged)) {
+      if (value !== undefined) {
+        req = req.field(key, value);
+      }
+    }
+    return req.attach('image', jpegBytes, { filename: 'photo.jpg', contentType: 'image/jpeg' });
   }
 
   function okResponse(): typeof fetch {
@@ -69,7 +84,7 @@ describe('POST /challenge', () => {
     expect(calledInit).toMatchObject({ method: 'POST' });
   });
 
-  it('sends the metadata contract the game server expects', async () => {
+  it('sends the metadata contract the game server expects, with no placeholders', async () => {
     let capturedForm: FormData | undefined;
     const fetchMock: typeof fetch = vi.fn((_input, init?: FetchInit) => {
       capturedForm = init?.body as FormData;
@@ -81,8 +96,9 @@ describe('POST /challenge', () => {
     const metadataField = capturedForm?.get('metadata');
     expect(typeof metadataField).toBe('string');
     expect(JSON.parse(metadataField as string)).toEqual({
-      session: '00000000-0000-0000-0000-000000000000',
-      participant: '00000000-0000-0000-0001-000000000001',
+      session: VALID_SESSION,
+      participant: VALID_PARTICIPANT,
+      checkpoint: 2,
       location: { lat: 51.509948, long: -1.485923 },
       'capture-time': '2012-03-29T10:05:45-06:00',
     });
@@ -104,6 +120,29 @@ describe('POST /challenge', () => {
     expect(response.text).toBe('bad request upstream');
   });
 
+  it('relays a 202 pending verdict body unchanged', async () => {
+    const body = JSON.stringify({ attempt: 1 });
+    const fetchMock: typeof fetch = vi.fn(() =>
+      Promise.resolve(new Response(body, { status: 202, headers: { 'content-type': 'application/json' } })),
+    );
+
+    const response = await postChallenge(createApp(testConfig, { fetch: fetchMock }));
+
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual({ attempt: 1 });
+  });
+
+  it('relays a 404 (unknown session/checkpoint) unchanged', async () => {
+    const fetchMock: typeof fetch = vi.fn(() =>
+      Promise.resolve(new Response('not found upstream', { status: 404 })),
+    );
+
+    const response = await postChallenge(createApp(testConfig, { fetch: fetchMock }));
+
+    expect(response.status).toBe(404);
+    expect(response.text).toBe('not found upstream');
+  });
+
   it('returns 502 when the game server cannot be reached', async () => {
     const fetchMock: typeof fetch = vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED')));
 
@@ -118,6 +157,9 @@ describe('POST /challenge', () => {
 
     const response = await request(createApp(testConfig, { fetch: fetchMock }))
       .post('/challenge')
+      .field('session', VALID_SESSION)
+      .field('participant', VALID_PARTICIPANT)
+      .field('checkpoint', VALID_CHECKPOINT)
       .field('latitude', '51.5')
       .field('longitude', '-1.5')
       .field('capturedAt', '2012-03-29T10:05:45-06:00');
@@ -131,7 +173,28 @@ describe('POST /challenge', () => {
 
     const response = await request(createApp(testConfig, { fetch: fetchMock }))
       .post('/challenge')
+      .field('session', VALID_SESSION)
+      .field('participant', VALID_PARTICIPANT)
+      .field('checkpoint', VALID_CHECKPOINT)
       .attach('image', jpegBytes, { filename: 'photo.jpg', contentType: 'image/jpeg' });
+
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing session', { session: undefined }],
+    ['invalid session', { session: 'not-a-uuid' }],
+    ['missing participant', { participant: undefined }],
+    ['invalid participant', { participant: 'not-a-uuid' }],
+    ['missing checkpoint', { checkpoint: undefined }],
+    ['non-integer checkpoint', { checkpoint: '1.5' }],
+    ['checkpoint below 1', { checkpoint: '0' }],
+    ['non-numeric checkpoint', { checkpoint: 'two' }],
+  ])('rejects a request with %s, and sends nothing upstream', async (_label, overrides) => {
+    const fetchMock = okResponse();
+
+    const response = await postChallenge(createApp(testConfig, { fetch: fetchMock }), overrides);
 
     expect(response.status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
