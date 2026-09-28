@@ -5,35 +5,27 @@
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * @typedef {{ session: string, participant: string, checkpoint: number }} Identity
+ * @param {string} value
+ * @returns {boolean}
  */
+export function isValidUuid(value) {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
 
 /**
- * Reads and validates session/participant/checkpoint from the page's query
- * string (e.g. /challenge?session=...&participant=...&checkpoint=2). There's
- * no join flow yet, so this is how a submission is identified for now.
+ * Reads and validates the checkpoint from the page's query string (e.g.
+ * /challenge?checkpoint=2). Unlike session/participant (see issue #18),
+ * there's no sensible default for this — it names a specific point in the
+ * hunt, so it always has to come from the link.
  *
  * @param {URLSearchParams} searchParams
- * @returns {Identity | null} null if any of the three are missing or malformed.
+ * @returns {number | null} null if missing or not an integer >= 1.
  */
-export function readIdentityFromQuery(searchParams) {
-  const session = searchParams.get('session');
-  const participant = searchParams.get('participant');
-  const checkpointRaw = searchParams.get('checkpoint');
-  const checkpoint = checkpointRaw === null ? NaN : Number(checkpointRaw);
+export function readCheckpointFromQuery(searchParams) {
+  const raw = searchParams.get('checkpoint');
+  const checkpoint = raw === null ? NaN : Number(raw);
 
-  if (
-    !session ||
-    !UUID_RE.test(session) ||
-    !participant ||
-    !UUID_RE.test(participant) ||
-    !Number.isInteger(checkpoint) ||
-    checkpoint < 1
-  ) {
-    return null;
-  }
-
-  return { session, participant, checkpoint };
+  return Number.isInteger(checkpoint) && checkpoint >= 1 ? checkpoint : null;
 }
 
 /**
