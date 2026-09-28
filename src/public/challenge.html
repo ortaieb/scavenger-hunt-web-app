@@ -11,6 +11,14 @@
       <h1>Capture your challenge</h1>
       <p id="status" class="status" role="status">Starting camera…</p>
 
+      <fieldset class="identity">
+        <legend>Your details</legend>
+        <label for="session-input">Session ID</label>
+        <input id="session-input" type="text" autocomplete="off" spellcheck="false" />
+        <label for="participant-input">Participant ID</label>
+        <input id="participant-input" type="text" autocomplete="off" spellcheck="false" />
+      </fieldset>
+
       <div class="camera-frame">
         <video id="preview" autoplay playsinline muted></video>
         <canvas id="snapshot" hidden></canvas>
