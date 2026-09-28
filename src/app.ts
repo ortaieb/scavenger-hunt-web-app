@@ -22,6 +22,21 @@ const upload = multer({
   limits: { fileSize: 15 * 1024 * 1024 },
 });
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidUuid(value: string | undefined): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+
+/** Returns the checkpoint number, or undefined if it isn't an integer >= 1. */
+function parseCheckpoint(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const checkpoint = Number(value);
+  return Number.isInteger(checkpoint) && checkpoint >= 1 ? checkpoint : undefined;
+}
+
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -57,7 +72,10 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // Express 5 forwards a rejected handler promise to the error middleware,
   // so this can be async without an extra try/catch wrapper at the top level.
   app.post('/challenge', upload.single('image'), async (req: Request, res: Response) => {
-    const { latitude, longitude, capturedAt } = req.body as Record<string, string | undefined>;
+    const { latitude, longitude, capturedAt, session, participant, checkpoint } = req.body as Record<
+      string,
+      string | undefined
+    >;
 
     if (!req.file) {
       res.status(400).json({ error: 'image is required' });
@@ -67,11 +85,26 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
       res.status(400).json({ error: 'latitude, longitude and capturedAt are required' });
       return;
     }
+    // There's no join flow yet: the page reads these from its own query
+    // string and posts them with the capture (see issue #14). Validated
+    // here rather than trusted, since the client's own check can be bypassed.
+    if (!isValidUuid(session) || !isValidUuid(participant)) {
+      res.status(400).json({ error: 'session and participant must be valid UUIDs' });
+      return;
+    }
+    const checkpointNumber = parseCheckpoint(checkpoint);
+    if (checkpointNumber === undefined) {
+      res.status(400).json({ error: 'checkpoint must be an integer >= 1' });
+      return;
+    }
 
-    // session/participant are left as "n/a" at this stage (see issue #7).
+    // Only raw claims go upstream — location, capture-time and the image.
+    // Nothing here may look like a pre-computed result: the game-server
+    // alone decides the verdict (see issue #14).
     const metadata = {
-      session: '00000000-0000-0000-0000-000000000000',
-      participant: '00000000-0000-0000-0001-000000000001',
+      session,
+      participant,
+      checkpoint: checkpointNumber,
       location: { lat: Number(latitude), long: Number(longitude) },
       'capture-time': capturedAt,
     };

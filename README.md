@@ -18,25 +18,47 @@ npm run dev        # watch mode, http://localhost:3000
 
 ### /challenge
 
-`GET /challenge` serves an in-app photo + location capture page: it renders
-the device camera directly on the page via `getUserMedia` (no native picker,
-so there's no gallery-upload option), lets the player take and retake a
-shot, then reads their location and submits both.
+`GET /challenge?session=<uuid>&participant=<uuid>&checkpoint=<int>` serves
+an in-app photo + location capture page. There's no join flow yet, so the
+submission is identified entirely by these three query parameters on the
+page's own link; the page reads and validates them client-side and disables
+Submit (and Capture) if any are missing or malformed. It renders the device
+camera directly on the page via `getUserMedia` (no native picker, so there's
+no gallery-upload option), lets the player take and retake a shot, then
+reads their location and submits everything.
 
-`POST /challenge` receives that submission (`image`, `latitude`, `longitude`,
-`capturedAt`) and relays it to the game-server (a separate service, not part
-of this repo) as `multipart/form-data`:
+`POST /challenge` receives that submission (`session`, `participant`,
+`checkpoint`, `image`, `latitude`, `longitude`, `capturedAt`), validates
+`session`/`participant` as UUIDs and `checkpoint` as an integer >= 1
+(`400` otherwise, and nothing is sent upstream), and relays it to the
+game-server (a separate service, not part of this repo) as
+`multipart/form-data`:
 
-- `metadata` — a JSON string: `{"session","participant","location":{"lat","long"},"capture-time"}`.
-  `session`/`participant` are sent as `"n/a"` for now.
+- `metadata` — a JSON string:
+  `{"session","participant","checkpoint","location":{"lat","long"},"capture-time"}`,
+  built from the request's own fields (no placeholders).
 - `challenge-image` — the captured JPEG.
+
+Only these raw claims go upstream — nothing that looks like a pre-computed
+result. The game-server alone decides the verdict; this app never
+recomputes or reinterprets it, only relays and displays it:
+
+- `202` + a `pending` body → "Checks passed, waiting for the referee."
+- `200` + a `failed` body (with `rejections`) → each rejection's message,
+  verbatim, and Submit is replaced by **Retake**
+- `404` → "Unknown game or checkpoint, check your link"
+- anything else, or a network failure → the status code and error body
+
+Where an attempt number is present in the verdict, it's shown alongside the
+message. The exact verdict response shape (field names for the attempt
+number and rejection list) is inferred from the issue that introduced this —
+worth double-checking against the real game-server once both are deployed
+together.
 
 The browser posts to this app's own `/challenge`, not the game-server
 directly: this app runs over HTTPS off `localhost` (required for the camera
 API, see below), and the game-server isn't guaranteed to serve HTTPS or
-allow our origin via CORS, so the request has to go server-to-server. The
-client shows "challenge was sent" on a `200`, or the status code and error
-body otherwise.
+allow our origin via CORS, so the request has to go server-to-server.
 
 Camera and geolocation only work in a "secure context": HTTPS, or plain HTTP
 on `localhost`. To try `/challenge` from a phone over the LAN (not
@@ -91,6 +113,8 @@ src/
   config.ts    environment parsing and validation
   server.ts    HTTP/HTTPS server construction
   public/      static assets for /challenge (html, css, client js)
+    challenge-logic.js  pure identity/verdict logic, unit tested directly
+    challenge.js        DOM/camera/fetch wiring, imports challenge-logic.js
 scripts/       dev tooling (self-signed cert generation)
 tests/         Vitest suites
 ```
