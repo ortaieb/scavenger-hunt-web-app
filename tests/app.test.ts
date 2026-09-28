@@ -201,6 +201,71 @@ describe('POST /challenge', () => {
   });
 });
 
+describe('POST /checkpoint/proximity', () => {
+  const proximityBody = {
+    session: VALID_SESSION,
+    participant: VALID_PARTICIPANT,
+    checkpoint: 2,
+    location: { lat: 51.509948, long: -1.485923 },
+  };
+
+  it('forwards the request body upstream unchanged', async () => {
+    let capturedBody: string | undefined;
+    const fetchMock: typeof fetch = vi.fn((_input, init?: FetchInit) => {
+      capturedBody = init?.body as string;
+      return Promise.resolve(
+        new Response(JSON.stringify({ in_range: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/checkpoint/proximity')
+      .send(proximityBody);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [calledUrl, calledInit] = vi.mocked(fetchMock).mock.calls[0]!;
+    expect((calledUrl as URL).href).toBe('http://game-server.test/checkpoint/proximity');
+    expect(calledInit).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(capturedBody as string)).toEqual(proximityBody);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ in_range: true });
+  });
+
+  it.each([
+    ['a false verdict', 200, { in_range: false }],
+    ['a 429', 429, { error: 'rate limited' }],
+    ['a 404', 404, { error: 'unknown checkpoint' }],
+  ])('passes back status and body unchanged for %s', async (_label, status, body) => {
+    const fetchMock: typeof fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }),
+      ),
+    );
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/checkpoint/proximity')
+      .send(proximityBody);
+
+    expect(response.status).toBe(status);
+    expect(response.body).toEqual(body);
+  });
+
+  it('returns 502 when the game server cannot be reached', async () => {
+    const fetchMock: typeof fetch = vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED')));
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/checkpoint/proximity')
+      .send(proximityBody);
+
+    expect(response.status).toBe(502);
+    expect((response.body as ErrorBody).error).toContain('connect ECONNREFUSED');
+  });
+});
+
 describe('unknown routes', () => {
   it('responds with 404', async () => {
     const response = await request(createApp(testConfig)).get('/nope');

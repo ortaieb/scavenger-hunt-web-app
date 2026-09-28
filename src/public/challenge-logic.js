@@ -97,3 +97,40 @@ function parseJsonSafely(text) {
     return null;
   }
 }
+
+const ACCURACY_WARNING_METERS = 50;
+
+/**
+ * Local, advisory-only hint — no server round trip. Never blocks anything.
+ *
+ * @param {number} accuracyMeters
+ * @returns {string} '' if no hint applies
+ */
+export function describeAccuracyHint(accuracyMeters) {
+  if (!Number.isFinite(accuracyMeters) || accuracyMeters <= ACCURACY_WARNING_METERS) {
+    return '';
+  }
+  return `Your location fix is imprecise (±${Math.round(accuracyMeters)} m); try moving into the open.`;
+}
+
+/**
+ * Turns the proximity relay's response into a warning to show, or none.
+ * This is a courtesy hint, not a check: it never reports checkpoint
+ * coordinates, distance or a radius (the relay never sends them either),
+ * and it never gates Submit — every non-2xx case (429, 404, or anything
+ * else, including a request that never came back at all) is treated as
+ * "say nothing", per the issue.
+ *
+ * @param {number} status
+ * @param {unknown} body already-parsed JSON, or null if parsing failed
+ * @returns {string} '' if no warning applies
+ */
+export function describeProximityWarning(status, body) {
+  if (status < 200 || status >= 300) {
+    return '';
+  }
+  if (body && typeof body === 'object' && 'in_range' in body && body.in_range === false) {
+    return 'You may be outside the checkpoint area. You can still submit.';
+  }
+  return '';
+}
