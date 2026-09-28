@@ -5,6 +5,8 @@
 // picker — that keeps the capture entirely in-app and never offers a photo
 // gallery as an alternative source.
 
+import { readIdentityFromQuery, describeVerdict } from './challenge-logic.js';
+
 const statusEl = document.getElementById('status');
 const video = document.getElementById('preview');
 const canvas = document.getElementById('snapshot');
@@ -17,6 +19,11 @@ const locationEl = document.getElementById('location');
 let stream = null;
 let capturedBlob = null;
 let position = null;
+
+// There's no join flow yet, so the submission is identified by query params
+// on this page's own URL (see issue #14), e.g.
+// /challenge?session=...&participant=...&checkpoint=2
+const identity = readIdentityFromQuery(new URLSearchParams(window.location.search));
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -120,6 +127,10 @@ function retake() {
 }
 
 async function submitCapture() {
+  if (!identity) {
+    setStatus('This link is missing or has an invalid session, participant or checkpoint.');
+    return;
+  }
   if (!capturedBlob) {
     setStatus('Take a photo first.');
     return;
@@ -134,6 +145,9 @@ async function submitCapture() {
 
   try {
     const form = new FormData();
+    form.append('session', identity.session);
+    form.append('participant', identity.participant);
+    form.append('checkpoint', String(identity.checkpoint));
     form.append('image', capturedBlob, 'challenge.jpg');
     form.append('latitude', String(position.coords.latitude));
     form.append('longitude', String(position.coords.longitude));
@@ -142,15 +156,16 @@ async function submitCapture() {
     // Posted to this app's own /challenge, same-origin — not the game-server
     // directly, which the browser can't safely reach (see issue #7).
     const response = await fetch('/challenge', { method: 'POST', body: form });
+    const bodyText = await response.text().catch(() => '');
 
-    // The game-server's happy path is 202 Accepted (the submission is
-    // queued, not synchronously processed); a plain 200 is treated the same
-    // way in case that ever changes (see issue #10).
-    if (response.status === 200 || response.status === 202) {
-      setStatus('challenge was sent');
-    } else {
-      const body = await response.text().catch(() => '');
-      setStatus(`Error ${response.status}: ${body || response.statusText}`);
+    // describeVerdict only reports what the game-server already decided —
+    // this page never computes or infers a verdict itself (see issue #14).
+    const { message, forceRetake } = describeVerdict(response.status, bodyText);
+    setStatus(message);
+    if (forceRetake) {
+      // The photo was rejected; resubmitting the same one won't help, so
+      // Retake is the only way forward until a new capture is taken.
+      submitBtn.hidden = true;
     }
   } catch (err) {
     setStatus(`Upload failed: ${describeError(err)}`);
@@ -165,4 +180,10 @@ submitBtn.addEventListener('click', () => {
   void submitCapture();
 });
 
-void startCamera();
+if (!identity) {
+  captureBtn.disabled = true;
+  submitBtn.disabled = true;
+  setStatus('This link is missing or has an invalid session, participant or checkpoint.');
+} else {
+  void startCamera();
+}
