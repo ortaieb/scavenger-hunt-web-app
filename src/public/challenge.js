@@ -5,7 +5,14 @@
 // picker — that keeps the capture entirely in-app and never offers a photo
 // gallery as an alternative source.
 
-import { readIdentityFromQuery, describeVerdict } from './challenge-logic.js';
+import {
+  readIdentityFromQuery,
+  describeVerdict,
+  describeAccuracyHint,
+  describeProximityWarning,
+} from './challenge-logic.js';
+
+const PROXIMITY_TIMEOUT_MS = 3000;
 
 const statusEl = document.getElementById('status');
 const video = document.getElementById('preview');
@@ -15,10 +22,19 @@ const captureBtn = document.getElementById('capture');
 const retakeBtn = document.getElementById('retake');
 const submitBtn = document.getElementById('submit');
 const locationEl = document.getElementById('location');
+const locationWarningEl = document.getElementById('location-warning');
 
 let stream = null;
 let capturedBlob = null;
 let position = null;
+
+// The courtesy hints (accuracy + proximity) are independent, but shown
+// together in one element. A fix id guards against a slow proximity
+// response from an older fix landing after a newer one (e.g. a quick
+// Retake) and overwriting its hint.
+let accuracyHintText = '';
+let proximityHintText = '';
+let latestFixId = 0;
 
 // There's no join flow yet, so the submission is identified by query params
 // on this page's own URL (see issue #14), e.g.
@@ -60,6 +76,12 @@ function stopCamera() {
   stream = null;
 }
 
+function renderLocationHints() {
+  const text = [accuracyHintText, proximityHintText].filter(Boolean).join('\n');
+  locationWarningEl.textContent = text;
+  locationWarningEl.hidden = text === '';
+}
+
 function requestLocation() {
   if (!('geolocation' in navigator)) {
     locationEl.textContent = 'Not supported in this browser.';
@@ -72,12 +94,69 @@ function requestLocation() {
       position = pos;
       const { latitude, longitude, accuracy } = pos.coords;
       locationEl.textContent = `${latitude.toFixed(5)}, ${longitude.toFixed(5)} (±${Math.round(accuracy)}m)`;
+
+      // Local, advisory-only — no server round trip.
+      accuracyHintText = describeAccuracyHint(accuracy);
+      proximityHintText = '';
+      renderLocationHints();
+
+      void checkProximity(pos);
     },
     (err) => {
       locationEl.textContent = `Location unavailable: ${err.message}`;
     },
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
   );
+}
+
+/**
+ * Asks the game-server's proximity advisory (via this app's relay) whether
+ * the player looks out of range, at most once per location fix. This is a
+ * courtesy only: it never blocks Submit, and any failure (429, 404, network
+ * error, timeout) is treated the same as "say nothing" (see issue #15).
+ */
+async function checkProximity(pos) {
+  if (!identity) {
+    return;
+  }
+
+  const fixId = ++latestFixId;
+  let warning = '';
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), PROXIMITY_TIMEOUT_MS);
+
+    let response;
+    try {
+      response = await fetch('/checkpoint/proximity', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          session: identity.session,
+          participant: identity.participant,
+          checkpoint: identity.checkpoint,
+          location: { lat: pos.coords.latitude, long: pos.coords.longitude },
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    const body = await response
+      .json()
+      .catch(() => null);
+    warning = describeProximityWarning(response.status, body);
+  } catch {
+    // Network error, timeout/abort, or a malformed response — stay silent.
+    warning = '';
+  }
+
+  if (fixId === latestFixId) {
+    proximityHintText = warning;
+    renderLocationHints();
+  }
 }
 
 function capturePhoto() {
@@ -121,6 +200,13 @@ function retake() {
   retakeBtn.hidden = true;
   submitBtn.hidden = true;
   locationEl.textContent = 'Not captured yet';
+
+  // The old fix's hints no longer apply; a new one is requested after the
+  // next capture, which also supersedes any still-in-flight proximity check.
+  latestFixId += 1;
+  accuracyHintText = '';
+  proximityHintText = '';
+  renderLocationHints();
 
   setStatus('Point the camera and take a photo.');
   void startCamera();
