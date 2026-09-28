@@ -132,5 +132,28 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     }
   });
 
+  // Relays a courtesy proximity check to the game-server, for the same
+  // HTTPS/CORS reasons as /challenge. Forwards the request body unchanged
+  // and passes the upstream status/body straight back — this is advisory
+  // only (see issue #15), so it does no validation of its own; the
+  // game-server's answer (in_range: true|false) never includes checkpoint
+  // coordinates, distance or a radius, and neither does this relay.
+  app.post('/checkpoint/proximity', express.json(), async (req: Request, res: Response) => {
+    try {
+      const upstream = await doFetch(new URL('/checkpoint/proximity', config.gameServerUrl), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(req.body),
+      });
+      const body = await upstream.text();
+      res
+        .status(upstream.status)
+        .type(upstream.headers.get('content-type') ?? 'application/json')
+        .send(body);
+    } catch (err) {
+      res.status(502).json({ error: `Could not reach the game server: ${describeError(err)}` });
+    }
+  });
+
   return app;
 }
