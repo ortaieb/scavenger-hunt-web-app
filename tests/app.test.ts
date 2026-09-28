@@ -81,8 +81,8 @@ describe('POST /challenge', () => {
     const metadataField = capturedForm?.get('metadata');
     expect(typeof metadataField).toBe('string');
     expect(JSON.parse(metadataField as string)).toEqual({
-      session: 'n/a',
-      participant: 'n/a',
+      session: '00000000-0000-0000-0000-000000000000',
+      participant: '00000000-0000-0000-0001-000000000001',
       location: { lat: 51.509948, long: -1.485923 },
       'capture-time': '2012-03-29T10:05:45-06:00',
     });
