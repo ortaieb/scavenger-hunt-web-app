@@ -3,42 +3,38 @@ import {
   describeAccuracyHint,
   describeProximityWarning,
   describeVerdict,
-  readIdentityFromQuery,
+  isValidUuid,
+  readCheckpointFromQuery,
 } from '../src/public/challenge-logic.js';
 
 const VALID_SESSION = '11111111-1111-4111-8111-111111111111';
-const VALID_PARTICIPANT = '22222222-2222-4222-8222-222222222222';
 
-describe('readIdentityFromQuery', () => {
-  it('parses a valid session/participant/checkpoint', () => {
-    const params = new URLSearchParams(
-      `session=${VALID_SESSION}&participant=${VALID_PARTICIPANT}&checkpoint=2`,
-    );
+describe('isValidUuid', () => {
+  it('accepts a well-formed UUID', () => {
+    expect(isValidUuid(VALID_SESSION)).toBe(true);
+  });
 
-    expect(readIdentityFromQuery(params)).toEqual({
-      session: VALID_SESSION,
-      participant: VALID_PARTICIPANT,
-      checkpoint: 2,
-    });
+  it.each(['', 'not-a-uuid', '11111111-1111-1111-1111', VALID_SESSION.toUpperCase()])(
+    'handles %s',
+    (value) => {
+      // Case is accepted (UUIDs aren't case-sensitive); everything else isn't.
+      expect(isValidUuid(value)).toBe(value === VALID_SESSION.toUpperCase());
+    },
+  );
+});
+
+describe('readCheckpointFromQuery', () => {
+  it('parses a valid checkpoint', () => {
+    expect(readCheckpointFromQuery(new URLSearchParams('checkpoint=2'))).toBe(2);
   });
 
   it.each([
-    ['missing session', `participant=${VALID_PARTICIPANT}&checkpoint=2`],
-    ['invalid session', `session=nope&participant=${VALID_PARTICIPANT}&checkpoint=2`],
-    ['missing participant', `session=${VALID_SESSION}&checkpoint=2`],
-    ['invalid participant', `session=${VALID_SESSION}&participant=nope&checkpoint=2`],
-    ['missing checkpoint', `session=${VALID_SESSION}&participant=${VALID_PARTICIPANT}`],
-    [
-      'non-integer checkpoint',
-      `session=${VALID_SESSION}&participant=${VALID_PARTICIPANT}&checkpoint=1.5`,
-    ],
-    ['checkpoint below 1', `session=${VALID_SESSION}&participant=${VALID_PARTICIPANT}&checkpoint=0`],
-    [
-      'non-numeric checkpoint',
-      `session=${VALID_SESSION}&participant=${VALID_PARTICIPANT}&checkpoint=two`,
-    ],
-  ])('returns null for %s', (_label, query) => {
-    expect(readIdentityFromQuery(new URLSearchParams(query))).toBeNull();
+    ['missing', ''],
+    ['non-integer', 'checkpoint=1.5'],
+    ['below 1', 'checkpoint=0'],
+    ['non-numeric', 'checkpoint=two'],
+  ])('returns null when %s', (_label, query) => {
+    expect(readCheckpointFromQuery(new URLSearchParams(query))).toBeNull();
   });
 });
 

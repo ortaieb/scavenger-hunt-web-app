@@ -34,6 +34,17 @@ describe('GET /challenge', () => {
     expect(response.headers['content-type']).toMatch(/^text\/html/);
     expect(response.text).toContain('<video');
   });
+
+  it('includes editable session and participant fields', async () => {
+    const response = await request(createApp(testConfig)).get('/challenge');
+
+    expect(response.text).toContain('id="session-input"');
+    expect(response.text).toContain('id="participant-input"');
+    expect(response.text).not.toMatch(/id="session-input"[^>]*\breadonly\b/);
+    expect(response.text).not.toMatch(/id="participant-input"[^>]*\breadonly\b/);
+    expect(response.text).not.toMatch(/id="session-input"[^>]*\bdisabled\b/);
+    expect(response.text).not.toMatch(/id="participant-input"[^>]*\bdisabled\b/);
+  });
 });
 
 describe('GET /challenge.js', () => {

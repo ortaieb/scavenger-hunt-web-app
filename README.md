@@ -18,14 +18,20 @@ npm run dev        # watch mode, http://localhost:3000
 
 ### /challenge
 
-`GET /challenge?session=<uuid>&participant=<uuid>&checkpoint=<int>` serves
-an in-app photo + location capture page. There's no join flow yet, so the
-submission is identified entirely by these three query parameters on the
-page's own link; the page reads and validates them client-side and disables
-Submit (and Capture) if any are missing or malformed. It renders the device
-camera directly on the page via `getUserMedia` (no native picker, so there's
-no gallery-upload option), lets the player take and retake a shot, then
-reads their location and submits everything.
+`GET /challenge?checkpoint=<int>` serves an in-app photo + location capture
+page. There's no join flow yet, so **Session ID** and **Participant ID** are
+plain editable text fields on the page — pre-filled from `?session=<uuid>`/
+`?participant=<uuid>` in the link when present and valid, a fresh random
+UUID otherwise (via `crypto.randomUUID()`), and freely editable from there.
+`checkpoint` is different: it names a specific point in the hunt, so it
+always has to come from the link, with no random default — Capture and
+Submit are disabled with a clear message if it's missing or malformed.
+Submit additionally requires both identity fields to hold a valid UUID at
+the moment it's clicked (whatever the player has typed by then).
+
+The page renders the device camera directly via `getUserMedia` (no native
+picker, so there's no gallery-upload option), lets the player take and
+retake a shot, then reads their location and submits everything.
 
 `POST /challenge` receives that submission (`session`, `participant`,
 `checkpoint`, `image`, `latitude`, `longitude`, `capturedAt`), validates

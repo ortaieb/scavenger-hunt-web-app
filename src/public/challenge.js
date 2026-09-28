@@ -6,7 +6,8 @@
 // gallery as an alternative source.
 
 import {
-  readIdentityFromQuery,
+  isValidUuid,
+  readCheckpointFromQuery,
   describeVerdict,
   describeAccuracyHint,
   describeProximityWarning,
@@ -23,6 +24,8 @@ const retakeBtn = document.getElementById('retake');
 const submitBtn = document.getElementById('submit');
 const locationEl = document.getElementById('location');
 const locationWarningEl = document.getElementById('location-warning');
+const sessionInput = document.getElementById('session-input');
+const participantInput = document.getElementById('participant-input');
 
 let stream = null;
 let capturedBlob = null;
@@ -36,10 +39,11 @@ let accuracyHintText = '';
 let proximityHintText = '';
 let latestFixId = 0;
 
-// There's no join flow yet, so the submission is identified by query params
-// on this page's own URL (see issue #14), e.g.
-// /challenge?session=...&participant=...&checkpoint=2
-const identity = readIdentityFromQuery(new URLSearchParams(window.location.search));
+// The checkpoint names a specific point in the hunt, so — unlike
+// session/participant — it always has to come from the link, with no
+// sensible default (see issue #18); there's still no join flow, so it's
+// read once from this page's own query string, e.g. /challenge?checkpoint=2.
+const checkpoint = readCheckpointFromQuery(new URLSearchParams(window.location.search));
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -47,6 +51,42 @@ function setStatus(message) {
 
 function describeError(err) {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** A random UUID for the session/participant fields' default value. */
+function generateUuid() {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : '';
+}
+
+/**
+ * Session and participant are editable fields, not fixed like checkpoint
+ * (see issue #18) — pre-filled from the query string when it supplies a
+ * valid UUID (so existing links keep working), a fresh random one
+ * otherwise, and editable from there.
+ */
+function initIdentityFields() {
+  const params = new URLSearchParams(window.location.search);
+  const sessionFromQuery = params.get('session');
+  const participantFromQuery = params.get('participant');
+
+  sessionInput.value = isValidUuid(sessionFromQuery) ? sessionFromQuery : generateUuid();
+  participantInput.value = isValidUuid(participantFromQuery) ? participantFromQuery : generateUuid();
+}
+
+/**
+ * Reads the identity fields as they currently stand — they're editable, so
+ * this is read fresh each time, not cached from page load.
+ *
+ * @returns {{ session: string, participant: string, checkpoint: number } | null}
+ */
+function getIdentity() {
+  const session = sessionInput.value.trim();
+  const participant = participantInput.value.trim();
+
+  if (checkpoint === null || !isValidUuid(session) || !isValidUuid(participant)) {
+    return null;
+  }
+  return { session, participant, checkpoint };
 }
 
 async function startCamera() {
@@ -116,7 +156,10 @@ function requestLocation() {
  * error, timeout) is treated the same as "say nothing" (see issue #15).
  */
 async function checkProximity(pos) {
+  const identity = getIdentity();
   if (!identity) {
+    // Advisory only — if the player has typed something invalid into an
+    // identity field, that's surfaced (loudly) at Submit time instead.
     return;
   }
 
@@ -213,8 +256,9 @@ function retake() {
 }
 
 async function submitCapture() {
+  const identity = getIdentity();
   if (!identity) {
-    setStatus('This link is missing or has an invalid session, participant or checkpoint.');
+    setStatus('Session and participant must both be a valid ID before you can submit.');
     return;
   }
   if (!capturedBlob) {
@@ -266,10 +310,12 @@ submitBtn.addEventListener('click', () => {
   void submitCapture();
 });
 
-if (!identity) {
+initIdentityFields();
+
+if (checkpoint === null) {
   captureBtn.disabled = true;
   submitBtn.disabled = true;
-  setStatus('This link is missing or has an invalid session, participant or checkpoint.');
+  setStatus('This link is missing a valid checkpoint.');
 } else {
   void startCamera();
 }

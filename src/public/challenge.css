@@ -36,6 +36,38 @@ h1 {
   color: #a5b4fc;
 }
 
+.identity {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: #1a1d24;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.identity legend {
+  padding: 0;
+  font-size: 0.8rem;
+  color: #9ca3af;
+}
+
+.identity label {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+.identity input {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #374151;
+  border-radius: 0.4rem;
+  background: #111318;
+  color: #f3f4f6;
+  font-size: 0.9rem;
+  font-family: ui-monospace, monospace;
+}
+
 .camera-frame {
   position: relative;
   width: 100%;
