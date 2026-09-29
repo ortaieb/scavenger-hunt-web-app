@@ -126,3 +126,25 @@ export function describeProximityWarning(status, body) {
   }
   return '';
 }
+
+/**
+ * Turns the checkpoint-challenge relay's response into pose text to show,
+ * or null to hide the panel. The pose is guidance only, never a check: a
+ * `{ pose: null }` body, a 404, a malformed body, any other non-2xx status,
+ * or a request that never came back at all (represented here as status 0 —
+ * see the caller) all mean "hide, and never block Capture or Submit" (see
+ * issue #20).
+ *
+ * @param {number} status
+ * @param {unknown} body already-parsed JSON, or null if parsing failed
+ * @returns {string | null}
+ */
+export function describeChallenge(status, body) {
+  if (status < 200 || status >= 300) {
+    return null;
+  }
+  if (body && typeof body === 'object' && typeof body.pose === 'string' && body.pose.length > 0) {
+    return body.pose;
+  }
+  return null;
+}
