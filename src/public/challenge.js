@@ -31,6 +31,9 @@ const sessionInput = document.getElementById('session-input');
 const participantInput = document.getElementById('participant-input');
 const challengePanelEl = document.getElementById('challenge-panel');
 const challengePoseEl = document.getElementById('challenge-pose');
+const checklistEl = document.getElementById('verdict-checklist');
+
+const ICON_CLASS = { '✓': 'passed', '✗': 'failed', '?': 'uncertain' };
 
 let stream = null;
 let capturedBlob = null;
@@ -58,6 +61,36 @@ const checkpoint = readCheckpointFromQuery(new URLSearchParams(window.location.s
 
 function setStatus(message) {
   statusEl.textContent = message;
+}
+
+/** Success/failure styling for the status line; anything else is neutral. */
+function setVerdictVariant(variant) {
+  statusEl.classList.remove('status--pass', 'status--failed');
+  if (variant === 'pass') {
+    statusEl.classList.add('status--pass');
+  } else if (variant === 'failed') {
+    statusEl.classList.add('status--failed');
+  }
+}
+
+/**
+ * @param {Array<{icon: string, label: string, reason: string}>} items
+ */
+function renderChecklist(items) {
+  checklistEl.replaceChildren();
+  if (!items || items.length === 0) {
+    checklistEl.hidden = true;
+    return;
+  }
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = `verdict-check verdict-check--${ICON_CLASS[item.icon] ?? 'uncertain'}`;
+    // textContent, never innerHTML: item.reason is server-written, but this
+    // app still never injects it as markup (see issue #20's pose panel).
+    li.textContent = item.reason ? `${item.icon} ${item.label} — ${item.reason}` : `${item.icon} ${item.label}`;
+    checklistEl.append(li);
+  }
+  checklistEl.hidden = false;
 }
 
 function describeError(err) {
@@ -333,6 +366,10 @@ function retake() {
   proximityHintText = '';
   renderLocationHints();
 
+  // The previous attempt's verdict no longer applies to a fresh photo.
+  setVerdictVariant(null);
+  renderChecklist([]);
+
   setStatus('Point the camera and take a photo.');
   void startCamera();
 }
@@ -352,8 +389,14 @@ async function submitCapture() {
     return;
   }
 
+  // The referee now runs before the response, which can take several
+  // seconds — lock the whole flow down while it does (see issue #21).
   submitBtn.disabled = true;
-  setStatus('Sending…');
+  captureBtn.disabled = true;
+  retakeBtn.disabled = true;
+  setVerdictVariant(null);
+  renderChecklist([]);
+  setStatus('The referee is checking your photo…');
 
   try {
     const form = new FormData();
@@ -372,17 +415,25 @@ async function submitCapture() {
 
     // describeVerdict only reports what the game-server already decided —
     // this page never computes or infers a verdict itself (see issue #14).
-    const { message, forceRetake } = describeVerdict(response.status, bodyText);
+    const { message, variant, hideSubmit, hideRetake, checklist } = describeVerdict(response.status, bodyText);
     setStatus(message);
-    if (forceRetake) {
-      // The photo was rejected; resubmitting the same one won't help, so
-      // Retake is the only way forward until a new capture is taken.
+    setVerdictVariant(variant);
+    renderChecklist(checklist);
+    if (hideSubmit) {
+      // A pass needs no more submissions; a failed one needs a fresh photo
+      // rather than resubmitting the one that was just rejected.
       submitBtn.hidden = true;
+    }
+    if (hideRetake) {
+      // Only on a pass — there's nothing left to retake.
+      retakeBtn.hidden = true;
     }
   } catch (err) {
     setStatus(`Upload failed: ${describeError(err)}`);
   } finally {
     submitBtn.disabled = false;
+    captureBtn.disabled = false;
+    retakeBtn.disabled = false;
   }
 }
 
