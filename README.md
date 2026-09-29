@@ -16,6 +16,11 @@ npm run dev        # watch mode, http://localhost:3000
 
 `GET /` responds with `hello, world!` as plain text.
 
+`GET /health` responds `200 {"status":"ok"}` — a liveness signal for the
+deployment platform, not a dependency check: it never calls the game-server,
+so a blip there doesn't make this app look unhealthy and get cycled for no
+reason.
+
 ### /challenge
 
 `GET /challenge?checkpoint=<int>` serves an in-app photo + location capture
@@ -202,6 +207,29 @@ curl localhost:3000
 The container serves plain HTTP by default. For HTTPS, mount a real
 certificate and set `TLS_KEY_PATH`/`TLS_CERT_PATH`, or terminate TLS at a
 reverse proxy in front of it.
+
+It also carries a `HEALTHCHECK` hitting `/health` — since distroless has no
+shell or curl, it's a plain `node` script (at `/nodejs/bin/node`, the
+image's own entrypoint binary; not on `PATH` for a separate `exec` the way
+it is as the container's ENTRYPOINT).
+
+### Deploying to Railway
+
+This image is built for exactly this: a platform-only PoC deploy to
+[Railway](https://railway.com/), which terminates HTTPS itself in front of
+the container.
+
+- **Build from this `Dockerfile`.** It never bakes in a TLS certificate and
+  serves plain HTTP by default (see above) — don't set `TLS_KEY_PATH`/
+  `TLS_CERT_PATH` or mount anything at `./certs` in this deployment; doing
+  so would make the container try to speak HTTPS on a port Railway expects
+  plain HTTP on.
+- **`PORT`** is already read from the environment with no code changes
+  needed — Railway injects its own value at container start, overriding the
+  Dockerfile's `ENV PORT=3000` default.
+- **Health check**: point Railway's health check (its own setting, separate
+  from the Dockerfile `HEALTHCHECK` above) at `GET /health` — that's the
+  signal it uses to decide when to switch traffic to a new deployment.
 
 ## License
 
