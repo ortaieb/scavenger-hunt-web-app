@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   describeAccuracyHint,
+  describeChallenge,
   describeProximityWarning,
   describeVerdict,
   isValidUuid,
@@ -159,5 +160,41 @@ describe('describeProximityWarning', () => {
     for (const forbidden of ['lat', 'lon', 'distance', 'radius', 'meter']) {
       expect(result.toLowerCase()).not.toContain(forbidden);
     }
+  });
+});
+
+describe('describeChallenge', () => {
+  it('returns the pose text for a 200 with a pose', () => {
+    expect(describeChallenge(200, { pose: 'Stand next to the red door' })).toBe(
+      'Stand next to the red door',
+    );
+  });
+
+  it('returns null (hide) when pose is null', () => {
+    expect(describeChallenge(200, { pose: null })).toBeNull();
+  });
+
+  it('returns null (hide) for a 404', () => {
+    expect(describeChallenge(404, { pose: 'irrelevant' })).toBeNull();
+  });
+
+  it('returns null (hide) for a non-JSON body', () => {
+    // The caller passes null when JSON.parse fails — see describeProximityWarning.
+    expect(describeChallenge(200, null)).toBeNull();
+  });
+
+  it('returns null (hide) for a network failure', () => {
+    // The caller represents "no response at all" as status 0.
+    expect(describeChallenge(0, null)).toBeNull();
+  });
+
+  it('returns null (hide) when the pose field is missing, empty or the wrong type', () => {
+    expect(describeChallenge(200, {})).toBeNull();
+    expect(describeChallenge(200, { pose: '' })).toBeNull();
+    expect(describeChallenge(200, { pose: 42 })).toBeNull();
+  });
+
+  it.each([429, 500, 502])('returns null (hide) for a %i response', (status) => {
+    expect(describeChallenge(status, { pose: 'Stand next to the red door' })).toBeNull();
   });
 });

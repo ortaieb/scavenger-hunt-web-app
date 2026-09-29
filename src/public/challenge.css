@@ -68,6 +68,28 @@ h1 {
   font-family: ui-monospace, monospace;
 }
 
+.challenge-panel {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  background: #1e2a1e;
+  border: 1px solid #2f4a2f;
+}
+
+.challenge-panel h2 {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #86efac;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.challenge-panel p {
+  margin: 0;
+  color: #f3f4f6;
+}
+
 .camera-frame {
   position: relative;
   width: 100%;
