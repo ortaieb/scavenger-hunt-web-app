@@ -46,25 +46,43 @@ game-server (a separate service, not part of this repo) as
 - `challenge-image` — the captured JPEG.
 
 Only these raw claims go upstream — nothing that looks like a pre-computed
-result. The game-server alone decides the verdict; this app never
-recomputes or reinterprets it, only relays and displays it:
+result. The game-server alone decides the verdict — a referee now checks
+the photo before responding, which can take several seconds; from Submit
+until the response, the page shows "The referee is checking your photo…"
+and disables Submit, Capture and Retake. The verdict itself is nested under
+`verdict.checkpoint` in the response body (`{ verdict: { checkpoint: {
+attempt, verdict, checks, rejections } } }`) — this app never recomputes or
+reinterprets it, only relays and displays exactly what's there, branching on
+`checkpoint.verdict`, not the HTTP status (the status is only a fallback for
+a body that isn't a verdict at all):
 
-- `202` + a `pending` body → "Checks passed, waiting for the referee."
-- `200` + a `failed` body (with `rejections`) → each rejection's message,
-  verbatim, and Submit is replaced by **Retake**
+- **`pass`** → "Checkpoint passed!" (success styling) plus the attempt
+  number; Submit and Retake are both hidden
+- **`failed`** → every rejection's message, verbatim, plus the attempt
+  number; Submit is replaced by **Retake**
+- **`pending`** → "Your photo is with the moderator for review." plus the
+  attempt number; neither button is forced
+- a relay timeout (`504`) → "The referee took too long. Please try again."
 - `404` → "Unknown game or checkpoint, check your link"
 - anything else, or a network failure → the status code and error body
 
-Where an attempt number is present in the verdict, it's shown alongside the
-message. The exact verdict response shape (field names for the attempt
-number and rejection list) is inferred from the issue that introduced this —
-worth double-checking against the real game-server once both are deployed
-together.
+Below the message, a checklist renders every entry in `checks`: ✓ for
+`passed`, ✗ for `failed`, ? for `uncertain`, and `skipped` checks are hidden.
+Each line shows the check's own player-safe `reason` verbatim, and a
+friendly label for known check names (falling back to the raw name for one
+this app doesn't recognize yet) — `confidence` is never shown to the player.
 
 The browser posts to this app's own `/challenge`, not the game-server
 directly: this app runs over HTTPS off `localhost` (required for the camera
 API, see below), and the game-server isn't guaranteed to serve HTTPS or
 allow our origin via CORS, so the request has to go server-to-server.
+`GAME_SERVER_TIMEOUT_MS` bounds how long that relay waits before giving up.
+
+The exact verdict schema (field names under `checks`/`rejections`, the set
+of check names) is inferred from the issue that introduced it, checked
+against its one worked example — not copied verbatim from the game-server's
+own README, which this repo doesn't have access to. Worth double-checking
+against the real game-server once both are deployed together.
 
 #### Courtesy out-of-range warning
 
@@ -131,19 +149,20 @@ Accept the self-signed certificate warning in the browser to continue.
 
 ## Configuration
 
-| Variable          | Default                 | Description                                                    |
-| ----------------- | ------------------------ | ---------------------------------------------------------------- |
-| `PORT`            | `3000`                   | Port the server binds to                                          |
-| `HOST`            | `0.0.0.0`                | Interface to bind to                                              |
-| `GAME_SERVER_URL` | `http://localhost:8000` | Base URL of the game-server; `POST /challenge` relays to `<this>/challenge` |
-| `TLS_KEY_PATH`    | —                        | Path to a TLS private key; must be set with `TLS_CERT_PATH`       |
-| `TLS_CERT_PATH`   | —                        | Path to a TLS certificate; must be set with `TLS_KEY_PATH`        |
+| Variable                 | Default                 | Description                                                    |
+| ------------------------- | ------------------------ | ---------------------------------------------------------------- |
+| `PORT`                    | `3000`                   | Port the server binds to                                          |
+| `HOST`                    | `0.0.0.0`                | Interface to bind to                                              |
+| `GAME_SERVER_URL`         | `http://localhost:8000` | Base URL of the game-server; `POST /challenge` relays to `<this>/challenge` |
+| `GAME_SERVER_TIMEOUT_MS`  | `45000`                  | How long `POST /challenge` waits for the game-server before returning `504` |
+| `TLS_KEY_PATH`            | —                        | Path to a TLS private key; must be set with `TLS_CERT_PATH`       |
+| `TLS_CERT_PATH`           | —                        | Path to a TLS certificate; must be set with `TLS_KEY_PATH`        |
 
 Copy `.env.example` to `.env` to override any of these locally — it's loaded
 automatically (and gitignored).
 
-An out-of-range or non-numeric `PORT` fails fast at startup, as does setting
-only one of `TLS_KEY_PATH`/`TLS_CERT_PATH`.
+An out-of-range or non-numeric `PORT` or `GAME_SERVER_TIMEOUT_MS` fails fast
+at startup, as does setting only one of `TLS_KEY_PATH`/`TLS_CERT_PATH`.
 
 If neither TLS variable is set, the server checks for a cert generated by
 `npm run certs:dev` (`certs/dev-{key,cert}.pem`) and uses it automatically;
