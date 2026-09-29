@@ -29,10 +29,23 @@ COPY --from=build /app/dist ./dist
 EXPOSE 3000
 # The distroless image already runs as the unprivileged `nonroot` user (65532).
 USER nonroot
+
+# No shell or curl in this image (distroless), so the probe is a plain node
+# script hitting /health directly. PORT is read at HEALTHCHECK-run time, so
+# a platform-injected override (e.g. Railway's) is honoured, not just the
+# ENV default above. /nodejs/bin/node is the image's own entrypoint binary
+# (see its Config.Entrypoint) — it isn't on PATH for a bare `exec`, unlike
+# when it's the container's own ENTRYPOINT, so the absolute path is required.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD ["/nodejs/bin/node", "-e", "fetch(`http://localhost:${process.env.PORT}/health`).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+
 # `node` is the image entrypoint, so CMD only carries the script path.
 #
-# The camera/geolocation APIs the /challenge page uses require HTTPS (or
-# localhost). This image serves plain HTTP by default; mount a real
-# certificate and set TLS_KEY_PATH/TLS_CERT_PATH to serve HTTPS directly, or
-# terminate TLS at a reverse proxy in front of it.
+# This image never bakes in a TLS certificate and defaults to plain HTTP
+# (no TLS_KEY_PATH/TLS_CERT_PATH set, nothing mounted at ./certs) — the
+# right mode for a platform like Railway that terminates HTTPS itself (see
+# issue #24). The camera/geolocation APIs /challenge uses do require HTTPS
+# off localhost, but that's the platform's job here, not this container's;
+# for serving HTTPS directly instead, mount a real certificate and set
+# TLS_KEY_PATH/TLS_CERT_PATH.
 CMD ["dist/index.js"]

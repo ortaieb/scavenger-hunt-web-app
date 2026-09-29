@@ -46,6 +46,10 @@ describe('loadConfig', () => {
 
   describe('TLS', () => {
     it('is undefined when no cert config is set and no dev cert exists', () => {
+      // This is exactly the deployed-container case (see issue #24): no
+      // TLS_KEY_PATH/TLS_CERT_PATH set, no certs/ mounted — createServer()
+      // then serves plain HTTP, which is what a platform like Railway
+      // (terminating HTTPS itself) needs.
       const config = loadConfig({}, { fileExists: () => false });
 
       expect(config.tls).toBeUndefined();
