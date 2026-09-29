@@ -155,5 +155,41 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     }
   });
 
+  // Relays the checkpoint's pose instruction, for the same HTTPS/CORS
+  // reasons as the other relays. Validates its own input (unlike
+  // /checkpoint/proximity, this one takes query params, not a body the
+  // game-server can reject on its own), then passes the upstream status and
+  // body straight back unchanged — this app never sees or reinterprets the
+  // pose, only relays it (see issue #20).
+  app.get('/checkpoint/challenge', async (req: Request, res: Response) => {
+    const { session, checkpoint } = req.query as Record<string, string | undefined>;
+
+    if (!isValidUuid(session)) {
+      res.status(400).json({ error: 'session must be a valid UUID' });
+      return;
+    }
+    const checkpointNumber = parseCheckpoint(checkpoint);
+    if (checkpointNumber === undefined) {
+      res.status(400).json({ error: 'checkpoint must be an integer >= 1' });
+      return;
+    }
+
+    try {
+      const upstream = await doFetch(
+        new URL(
+          `/sessions/${encodeURIComponent(session)}/checkpoints/${checkpointNumber}/challenge`,
+          config.gameServerUrl,
+        ),
+      );
+      const body = await upstream.text();
+      res
+        .status(upstream.status)
+        .type(upstream.headers.get('content-type') ?? 'application/json')
+        .send(body);
+    } catch (err) {
+      res.status(502).json({ error: `Could not reach the game server: ${describeError(err)}` });
+    }
+  });
+
   return app;
 }
