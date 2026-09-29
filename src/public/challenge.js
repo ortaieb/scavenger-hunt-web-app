@@ -11,9 +11,12 @@ import {
   describeVerdict,
   describeAccuracyHint,
   describeProximityWarning,
+  describeChallenge,
 } from './challenge-logic.js';
 
 const PROXIMITY_TIMEOUT_MS = 3000;
+const CHALLENGE_TIMEOUT_MS = 3000;
+const CHALLENGE_DEBOUNCE_MS = 500;
 
 const statusEl = document.getElementById('status');
 const video = document.getElementById('preview');
@@ -26,6 +29,8 @@ const locationEl = document.getElementById('location');
 const locationWarningEl = document.getElementById('location-warning');
 const sessionInput = document.getElementById('session-input');
 const participantInput = document.getElementById('participant-input');
+const challengePanelEl = document.getElementById('challenge-panel');
+const challengePoseEl = document.getElementById('challenge-pose');
 
 let stream = null;
 let capturedBlob = null;
@@ -38,6 +43,12 @@ let position = null;
 let accuracyHintText = '';
 let proximityHintText = '';
 let latestFixId = 0;
+
+// "Your challenge" panel state (see issue #20): re-fetched, debounced, when
+// the Session ID field settles on a new valid UUID.
+let challengeDebounceTimer = null;
+let lastFetchedChallengeSession = null;
+let latestChallengeRequestId = 0;
 
 // The checkpoint names a specific point in the hunt, so — unlike
 // session/participant — it always has to come from the link, with no
@@ -87,6 +98,77 @@ function getIdentity() {
     return null;
   }
   return { session, participant, checkpoint };
+}
+
+function renderChallenge(pose) {
+  if (pose === null) {
+    challengePanelEl.hidden = true;
+    challengePoseEl.textContent = '';
+  } else {
+    // textContent, never innerHTML: the pose comes from a moderator-written
+    // file, not code this app controls (see issue #20).
+    challengePoseEl.textContent = pose;
+    challengePanelEl.hidden = false;
+  }
+}
+
+/**
+ * Fetches the checkpoint's pose instruction for the given session, via this
+ * app's own relay. The pose is guidance only: it never blocks Capture or
+ * Submit, and every failure mode (404, timeout, network error, a malformed
+ * response) just hides the panel rather than showing an error.
+ *
+ * @param {string} session
+ */
+async function fetchChallenge(session) {
+  const requestId = ++latestChallengeRequestId;
+  let pose;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), CHALLENGE_TIMEOUT_MS);
+
+    let response;
+    try {
+      response = await fetch(
+        `/checkpoint/challenge?session=${encodeURIComponent(session)}&checkpoint=${checkpoint}`,
+        { signal: controller.signal },
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    const body = await response.json().catch(() => null);
+    pose = describeChallenge(response.status, body);
+  } catch {
+    // Network error or timeout/abort — status 0 stands for "no response at
+    // all", which describeChallenge already treats the same as any other
+    // failure: hide the panel.
+    pose = describeChallenge(0, null);
+  }
+
+  if (requestId === latestChallengeRequestId) {
+    renderChallenge(pose);
+  }
+}
+
+/**
+ * Re-fetches the pose when the Session ID field settles on a new valid
+ * UUID, debounced so a fetch isn't fired on every keystroke.
+ */
+function scheduleChallengeFetch() {
+  clearTimeout(challengeDebounceTimer);
+  challengeDebounceTimer = setTimeout(() => {
+    if (checkpoint === null) {
+      return;
+    }
+    const session = sessionInput.value.trim();
+    if (!isValidUuid(session) || session === lastFetchedChallengeSession) {
+      return;
+    }
+    lastFetchedChallengeSession = session;
+    void fetchChallenge(session);
+  }, CHALLENGE_DEBOUNCE_MS);
 }
 
 async function startCamera() {
@@ -309,8 +391,12 @@ retakeBtn.addEventListener('click', retake);
 submitBtn.addEventListener('click', () => {
   void submitCapture();
 });
+sessionInput.addEventListener('input', scheduleChallengeFetch);
 
 initIdentityFields();
+// Fires once the session field already holds a valid UUID at load, going
+// through the same debounced path as an edit does.
+scheduleChallengeFetch();
 
 if (checkpoint === null) {
   captureBtn.disabled = true;
