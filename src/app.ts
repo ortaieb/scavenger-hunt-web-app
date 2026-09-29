@@ -77,6 +77,14 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     res.type('text/plain').send('hello, world!');
   });
 
+  // Liveness signal for the deployment platform (Railway — see issue #24)
+  // to decide when to switch traffic to a new instance. Deliberately cheap:
+  // no upstream calls, so a blip in the game-server doesn't make this app
+  // look unhealthy and get cycled for no reason.
+  app.get('/health', (_req: Request, res: ExpressResponse) => {
+    res.json({ status: 'ok' });
+  });
+
   app.use(express.static(publicDir));
 
   // The in-app camera + geolocation capture page. Served explicitly (rather
