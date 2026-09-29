@@ -65,6 +65,18 @@ describe('GET /', () => {
   });
 });
 
+describe('GET /health', () => {
+  it('returns 200 without calling the game server', async () => {
+    const fetchMock: typeof fetch = vi.fn();
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock })).get('/health');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ok' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('GET /challenge', () => {
   it('serves the capture page', async () => {
     const response = await request(createApp(testConfig)).get('/challenge');
