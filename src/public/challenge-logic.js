@@ -29,53 +29,110 @@ export function readCheckpointFromQuery(searchParams) {
 }
 
 /**
- * @typedef {{ message: string, forceRetake: boolean }} VerdictDisplay
+ * @typedef {{ icon: string, label: string, reason: string }} ChecklistItem
+ * @typedef {{
+ *   message: string,
+ *   variant: 'pass' | 'failed' | 'pending' | 'error',
+ *   hideSubmit: boolean,
+ *   hideRetake: boolean,
+ *   checklist: ChecklistItem[],
+ * }} VerdictDisplay
  */
+
+// Friendly labels for known check names; anything else falls back to the
+// raw name, so a check the game-server adds later still shows up sensibly.
+const CHECK_LABELS = {
+  window_open: 'Checkpoint open',
+  capture_fresh: 'Photo is recent',
+  capture_time_plausible: 'Photo time',
+  in_range: 'Location',
+  photo_unique: 'New photo',
+  scene_matches: 'Right place',
+  pose_correct: 'Right pose',
+};
+
+const CHECK_ICONS = { passed: '✓', failed: '✗', uncertain: '?' };
 
 /**
  * Turns the relay's HTTP response into what to show the player. This only
  * *describes* what the game-server already decided — it must never compute
- * or infer a verdict (distance, time windows, etc.) itself.
+ * or infer a verdict (distance, time windows, checks, etc.) itself.
+ *
+ * The real shape nests everything under `verdict.checkpoint` (not at the
+ * top level — see issue #21, which fixed a bug where this read the wrong
+ * shape and silently hid every rejection reason):
+ * `{ verdict: { checkpoint: { attempt, verdict, checks, rejections } } }`.
+ * Branches on `checkpoint.verdict` ('pass'/'failed'/'pending'), not on the
+ * HTTP status — the status is only a fallback for a body that isn't a
+ * verdict at all (404, other 4xx/5xx, network errors).
  *
  * @param {number} status
  * @param {string} bodyText raw response body (JSON for a verdict, plain text otherwise)
  * @returns {VerdictDisplay}
  */
 export function describeVerdict(status, bodyText) {
-  if (status === 202) {
-    const attempt = readAttempt(parseJsonSafely(bodyText));
-    return {
-      message: withAttempt('Checks passed, waiting for the referee.', attempt),
-      forceRetake: false,
-    };
+  const checkpoint = parseJsonSafely(bodyText)?.verdict?.checkpoint;
+
+  if (checkpoint && typeof checkpoint === 'object' && typeof checkpoint.verdict === 'string') {
+    const attempt = typeof checkpoint.attempt === 'number' ? checkpoint.attempt : undefined;
+    const checklist = buildChecklist(checkpoint.checks);
+
+    if (checkpoint.verdict === 'pass') {
+      return result(withAttempt('Checkpoint passed!', attempt), 'pass', true, true, checklist);
+    }
+
+    if (checkpoint.verdict === 'failed') {
+      const rejections = Array.isArray(checkpoint.rejections) ? checkpoint.rejections : [];
+      const messages = rejections
+        .map((rejection) => (rejection && typeof rejection.message === 'string' ? rejection.message : undefined))
+        .filter((message) => Boolean(message));
+      const reason = messages.length > 0 ? messages.join(' ') : 'Submission was rejected.';
+      return result(withAttempt(reason, attempt), 'failed', true, false, checklist);
+    }
+
+    if (checkpoint.verdict === 'pending') {
+      // The referee runs before this response now, so "pending" means a
+      // moderator will look at it — not "waiting for the referee".
+      return result(
+        withAttempt('Your photo is with the moderator for review.', attempt),
+        'pending',
+        false,
+        false,
+        checklist,
+      );
+    }
   }
 
-  if (status === 200) {
-    const body = parseJsonSafely(bodyText);
-    const attempt = readAttempt(body);
-    const rejections = Array.isArray(body?.rejections) ? body.rejections : [];
-    const messages = rejections
-      .map((rejection) => (rejection && typeof rejection.message === 'string' ? rejection.message : undefined))
-      .filter((message) => Boolean(message));
-    const reason = messages.length > 0 ? messages.join(' ') : 'Submission was rejected.';
-    return {
-      message: withAttempt(reason, attempt),
-      forceRetake: true,
-    };
+  // Not a verdict body: a 404/504/other status, or an unrecognized shape
+  // (e.g. an older server with no `verdict.checkpoint` at all).
+  if (status === 504) {
+    return result('The referee took too long. Please try again.', 'error', false, false, []);
   }
-
   if (status === 404) {
-    return { message: 'Unknown game or checkpoint, check your link', forceRetake: false };
+    return result('Unknown game or checkpoint, check your link', 'error', false, false, []);
   }
-
-  return {
-    message: `Error ${status}: ${bodyText || 'unexpected response'}`,
-    forceRetake: false,
-  };
+  return result(`Error ${status}: ${bodyText || 'unexpected response'}`, 'error', false, false, []);
 }
 
-function readAttempt(body) {
-  return body && typeof body.attempt === 'number' ? body.attempt : undefined;
+function result(message, variant, hideSubmit, hideRetake, checklist) {
+  return { message, variant, hideSubmit, hideRetake, checklist };
+}
+
+/**
+ * @param {unknown} checks
+ * @returns {ChecklistItem[]}
+ */
+function buildChecklist(checks) {
+  if (!Array.isArray(checks)) {
+    return [];
+  }
+  return checks
+    .filter((check) => check && check.outcome !== 'skipped')
+    .map((check) => ({
+      icon: CHECK_ICONS[check?.outcome] ?? '?',
+      label: CHECK_LABELS[check?.name] ?? String(check?.name ?? 'Check'),
+      reason: typeof check?.reason === 'string' ? check.reason : '',
+    }));
 }
 
 function withAttempt(message, attempt) {

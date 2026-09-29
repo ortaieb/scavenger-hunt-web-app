@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
-import { createApp } from '../src/app.js';
+import { createApp, fetchWithTimeout } from '../src/app.js';
 
-const testConfig = { gameServerUrl: 'http://game-server.test' };
+const testConfig = { gameServerUrl: 'http://game-server.test', gameServerTimeoutMs: 5000 };
 
 const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 
@@ -15,6 +15,45 @@ interface ErrorBody {
 }
 
 type FetchInit = Parameters<typeof fetch>[1];
+
+describe('fetchWithTimeout', () => {
+  // Pure function, no HTTP/supertest involved, so fake timers are safe here
+  // — unlike in the POST /challenge 504 test below, which goes through a
+  // real request and found faking setTimeout globally breaks that.
+  it('rejects with an AbortError once the timeout elapses', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock: typeof fetch = vi.fn((_input, init?: FetchInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        }),
+      );
+
+      const resultPromise = fetchWithTimeout(fetchMock, 'http://game-server.test/challenge', {}, 1000);
+      const assertion = expect(resultPromise).rejects.toMatchObject({ name: 'AbortError' });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resolves normally when fetch settles before the timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(new Response('ok')));
+
+      const result = await fetchWithTimeout(fetchMock, 'http://game-server.test/challenge', {}, 1000);
+
+      expect(await result.text()).toBe('ok');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('GET /', () => {
   it('returns "hello, world!" as plain text', async () => {
@@ -51,6 +90,12 @@ describe('GET /challenge', () => {
 
     expect(response.text).toMatch(/id="challenge-panel"[^>]*\bhidden\b/);
     expect(response.text).toContain('id="challenge-pose"');
+  });
+
+  it('includes the verdict checklist, hidden by default', async () => {
+    const response = await request(createApp(testConfig)).get('/challenge');
+
+    expect(response.text).toMatch(/id="verdict-checklist"[^>]*\bhidden\b/);
   });
 });
 
@@ -168,6 +213,26 @@ describe('POST /challenge', () => {
 
     expect(response.status).toBe(502);
     expect((response.body as ErrorBody).error).toContain('connect ECONNREFUSED');
+  });
+
+  it('returns 504 when the game server does not respond within the configured timeout', async () => {
+    // A genuinely short real timeout, not a faked one: faking setTimeout
+    // globally also freezes parts of the real HTTP/multer plumbing this
+    // test's actual request depends on (verified experimentally — it hangs
+    // indefinitely). fetchWithTimeout's own timing is covered in isolation,
+    // with fake timers, below; this proves the route maps that into a 504.
+    const fetchMock: typeof fetch = vi.fn((_input, init?: FetchInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        });
+      }),
+    );
+
+    const response = await postChallenge(createApp({ ...testConfig, gameServerTimeoutMs: 30 }, { fetch: fetchMock }));
+
+    expect(response.status).toBe(504);
+    expect((response.body as ErrorBody).error).toContain('too long');
   });
 
   it('rejects a request with no image', async () => {

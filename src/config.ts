@@ -10,6 +10,8 @@ export interface Config {
   port: number;
   host: string;
   gameServerUrl: string;
+  /** How long POST /challenge waits for the game-server before returning 504. */
+  gameServerTimeoutMs: number;
   tls?: TlsConfig;
 }
 
@@ -19,6 +21,9 @@ const DEFAULT_HOST = '0.0.0.0';
 // relays captures to `${gameServerUrl}/challenge`. Override with
 // GAME_SERVER_URL (directly, or via a .env file) once it's not on localhost.
 const DEFAULT_GAME_SERVER_URL = 'http://localhost:8000';
+// The referee now runs before the game-server responds (see issue #21),
+// which can take several seconds; comfortably above its own timeout+retries.
+const DEFAULT_GAME_SERVER_TIMEOUT_MS = 45000;
 
 export interface ConfigDeps {
   /** Directory checked for an auto-generated dev certificate. */
@@ -60,10 +65,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, deps: ConfigDep
     throw new Error(`Invalid PORT: ${String(env.PORT)}`);
   }
 
+  const gameServerTimeoutMs =
+    env.GAME_SERVER_TIMEOUT_MS === undefined ? DEFAULT_GAME_SERVER_TIMEOUT_MS : Number(env.GAME_SERVER_TIMEOUT_MS);
+  if (!Number.isInteger(gameServerTimeoutMs) || gameServerTimeoutMs <= 0) {
+    throw new Error(`Invalid GAME_SERVER_TIMEOUT_MS: ${String(env.GAME_SERVER_TIMEOUT_MS)}`);
+  }
+
   return {
     port,
     host: env.HOST ?? DEFAULT_HOST,
     gameServerUrl: env.GAME_SERVER_URL ?? DEFAULT_GAME_SERVER_URL,
+    gameServerTimeoutMs,
     tls: resolveTls(env, deps),
   };
 }
