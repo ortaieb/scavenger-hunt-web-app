@@ -9,6 +9,7 @@ describe('loadConfig', () => {
       port: 3000,
       host: '0.0.0.0',
       gameServerUrl: 'http://localhost:8000',
+      gameServerTimeoutMs: 45000,
     });
   });
 
@@ -31,6 +32,16 @@ describe('loadConfig', () => {
     expect(loadConfig({ GAME_SERVER_URL: 'http://game-server.test' })).toMatchObject({
       gameServerUrl: 'http://game-server.test',
     });
+  });
+
+  it('reads GAME_SERVER_TIMEOUT_MS from the environment', () => {
+    expect(loadConfig({ GAME_SERVER_TIMEOUT_MS: '1000' })).toMatchObject({
+      gameServerTimeoutMs: 1000,
+    });
+  });
+
+  it.each(['0', '-1', '1.5', 'soon'])('rejects an invalid GAME_SERVER_TIMEOUT_MS (%s)', (value) => {
+    expect(() => loadConfig({ GAME_SERVER_TIMEOUT_MS: value })).toThrow(/Invalid GAME_SERVER_TIMEOUT_MS/);
   });
 
   describe('TLS', () => {
