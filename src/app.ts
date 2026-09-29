@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import express, { type Express, type Request, type Response } from 'express';
+import express, { type Express, type Request, type Response as ExpressResponse } from 'express';
 import multer from 'multer';
 import type { Config } from './config.ts';
 
@@ -10,7 +10,7 @@ import type { Config } from './config.ts';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 
-export type AppConfig = Pick<Config, 'gameServerUrl'>;
+export type AppConfig = Pick<Config, 'gameServerUrl' | 'gameServerTimeoutMs'>;
 
 export interface AppDeps {
   /** Injectable for tests; defaults to the global fetch. */
@@ -42,6 +42,28 @@ function describeError(err: unknown): string {
 }
 
 /**
+ * Calls fetchImpl, aborting it if it hasn't settled within timeoutMs. On a
+ * timeout this rejects with an AbortError (name === 'AbortError'), same as a
+ * real aborted fetch, so callers can tell "took too long" apart from any
+ * other failure to reach the server (see issue #21).
+ */
+export async function fetchWithTimeout(
+  fetchImpl: typeof fetch,
+  input: string | URL,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetchImpl(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
  * Builds the Express application. Kept separate from the server bootstrap so
  * tests can exercise the routes without binding a port.
  */
@@ -51,7 +73,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
 
   app.disable('x-powered-by');
 
-  app.get('/', (_req: Request, res: Response) => {
+  app.get('/', (_req: Request, res: ExpressResponse) => {
     res.type('text/plain').send('hello, world!');
   });
 
@@ -60,7 +82,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // The in-app camera + geolocation capture page. Served explicitly (rather
   // than relying on express.static's index/extension handling) so it works
   // at the clean `/challenge` path the issue asks for.
-  app.get('/challenge', (_req: Request, res: Response) => {
+  app.get('/challenge', (_req: Request, res: ExpressResponse) => {
     res.sendFile(path.join(publicDir, 'challenge.html'));
   });
 
@@ -71,7 +93,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // via CORS, so the request has to go server-to-server.
   // Express 5 forwards a rejected handler promise to the error middleware,
   // so this can be async without an extra try/catch wrapper at the top level.
-  app.post('/challenge', upload.single('image'), async (req: Request, res: Response) => {
+  app.post('/challenge', upload.single('image'), async (req: Request, res: ExpressResponse) => {
     const { latitude, longitude, capturedAt, session, participant, checkpoint } = req.body as Record<
       string,
       string | undefined
@@ -118,16 +140,25 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     );
 
     try {
-      const upstream = await doFetch(new URL('/challenge', config.gameServerUrl), {
-        method: 'POST',
-        body: form,
-      });
+      const upstream = await fetchWithTimeout(
+        doFetch,
+        new URL('/challenge', config.gameServerUrl),
+        { method: 'POST', body: form },
+        config.gameServerTimeoutMs,
+      );
       const body = await upstream.text();
       res
         .status(upstream.status)
         .type(upstream.headers.get('content-type') ?? 'text/plain')
         .send(body);
     } catch (err) {
+      // The referee now runs before the game-server responds, which can
+      // take a while (see issue #21) — distinguish "took too long" from any
+      // other failure to reach it, so the player sees the right message.
+      if (err instanceof Error && err.name === 'AbortError') {
+        res.status(504).json({ error: 'The game server took too long to respond' });
+        return;
+      }
       res.status(502).json({ error: `Could not reach the game server: ${describeError(err)}` });
     }
   });
@@ -138,7 +169,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // only (see issue #15), so it does no validation of its own; the
   // game-server's answer (in_range: true|false) never includes checkpoint
   // coordinates, distance or a radius, and neither does this relay.
-  app.post('/checkpoint/proximity', express.json(), async (req: Request, res: Response) => {
+  app.post('/checkpoint/proximity', express.json(), async (req: Request, res: ExpressResponse) => {
     try {
       const upstream = await doFetch(new URL('/checkpoint/proximity', config.gameServerUrl), {
         method: 'POST',
@@ -161,7 +192,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // game-server can reject on its own), then passes the upstream status and
   // body straight back unchanged — this app never sees or reinterprets the
   // pose, only relays it (see issue #20).
-  app.get('/checkpoint/challenge', async (req: Request, res: Response) => {
+  app.get('/checkpoint/challenge', async (req: Request, res: ExpressResponse) => {
     const { session, checkpoint } = req.query as Record<string, string | undefined>;
 
     if (!isValidUuid(session)) {
