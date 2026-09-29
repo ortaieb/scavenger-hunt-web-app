@@ -88,6 +88,24 @@ hint — nor anything else in this app — ever sees or computes the
 checkpoint's actual coordinates, a distance, or a radius; the game-server
 only ever answers `in_range: true|false`.
 
+#### Pose instruction
+
+Above the camera, a **"Your challenge"** panel shows the checkpoint's pose
+text — how the referee expects the player to pose for the photo (see
+`ortaieb/scavenger-hunt-game-server#22`) — fetched via `GET
+/checkpoint/challenge?session=<uuid>&checkpoint=<int>` (this app's own
+relay, validating both before forwarding to
+`${GAME_SERVER_URL}/sessions/{session}/checkpoints/{checkpoint}/challenge`
+and passing the status/body straight back). It's rendered with
+`textContent`, never `innerHTML`, since the text comes from a
+moderator-written file, not code this app controls.
+
+It's fetched once the Session ID field holds a valid UUID, and re-fetched
+(debounced ~500ms) whenever that field settles on a different valid UUID.
+Like the proximity warning, this is guidance only: a `{"pose": null}` body,
+a `404`, a malformed response, or no answer within ~3s all just hide the
+panel — it never blocks Capture or Submit.
+
 Camera and geolocation only work in a "secure context": HTTPS, or plain HTTP
 on `localhost`. To try `/challenge` from a phone over the LAN (not
 `localhost`), generate a local HTTPS certificate first:
