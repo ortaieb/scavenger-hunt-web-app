@@ -195,8 +195,10 @@ in-process via supertest.
 ## Docker
 
 The image is built in three stages — compile, production dependencies, and a
-[distroless](https://github.com/GoogleContainerTools/distroless) runtime with no
-shell or package manager that runs as the unprivileged `nonroot` user.
+[distroless](https://github.com/GoogleContainerTools/distroless) runtime that
+runs as the unprivileged `nonroot` user. By default it has no shell or
+package manager; see "Debugging a running container" below for the on-demand
+variant that does.
 
 ```bash
 docker build -t scavenger-hunt-web-app .
@@ -212,6 +214,29 @@ It also carries a `HEALTHCHECK` hitting `/health` — since distroless has no
 shell or curl, it's a plain `node` script (at `/nodejs/bin/node`, the
 image's own entrypoint binary; not on `PATH` for a separate `exec` the way
 it is as the container's ENTRYPOINT).
+
+### Debugging a running container
+
+Because the default image has no shell, tools that need one — `docker exec`,
+Railway's dashboard "console" — can't open into it (see issue #28). The app
+itself is unaffected either way; this only blocks interactive debugging.
+
+For that, build the same image against distroless's `debug-nonroot` tag
+instead, which adds BusyBox (a shell + core utilities) and nothing else —
+same user, same entrypoint, same everything:
+
+```bash
+docker build --build-arg RUNTIME_TAG=debug-nonroot -t scavenger-hunt-web-app:debug .
+docker run -d -p 3000:3000 --name web-app-debug scavenger-hunt-web-app:debug
+docker exec -it web-app-debug /busybox/sh   # a real shell, into the running app
+```
+
+To get this on Railway: build and push that image to GHCR under a distinct
+tag (e.g. `<sha>-debug`, never `:latest` or the plain `<sha>` tag), point
+the Railway service at it temporarily via the dashboard, debug via its
+console, then point the service back at the real tag. Never leave a
+`debug-nonroot` build as the deployed image — the whole point of the
+default is staying shell-less.
 
 ### Deploying to Railway
 
