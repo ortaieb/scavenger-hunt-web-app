@@ -2,6 +2,13 @@
 
 ARG NODE_VERSION=24
 ARG ALPINE_VERSION=3.22
+# "nonroot" (default): hardened, no shell/package manager — see below.
+# "debug-nonroot": the same image plus BusyBox (a shell + core utilities),
+# for on-demand interactive debugging (e.g. Railway's console, `docker exec`)
+# — see issue #28. Never the default: pass
+# --build-arg RUNTIME_TAG=debug-nonroot explicitly when you actually need a
+# shell; production should stay on the shell-less image.
+ARG RUNTIME_TAG=nonroot
 
 # --- build: full toolchain, compiles TypeScript to dist/ ---------------------
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS build
@@ -18,8 +25,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
-# --- runtime: distroless, no shell or package manager, runs as nonroot -------
-FROM gcr.io/distroless/nodejs${NODE_VERSION}-debian12:nonroot AS runtime
+# --- runtime: distroless, no shell or package manager by default, nonroot ---
+FROM gcr.io/distroless/nodejs${NODE_VERSION}-debian12:${RUNTIME_TAG} AS runtime
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000 HOST=0.0.0.0
 
