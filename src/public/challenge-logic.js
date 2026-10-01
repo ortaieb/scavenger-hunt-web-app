@@ -205,3 +205,44 @@ export function describeChallenge(status, body) {
   }
   return null;
 }
+
+/** @typedef {'environment' | 'user'} FacingMode */
+
+/** The rear camera — what the page opened unconditionally before issue #31. */
+export const DEFAULT_FACING_MODE = 'environment';
+
+/**
+ * Validates a stored/remembered camera choice, falling back to the rear
+ * camera for anything unknown (nothing stored yet, an old or tampered value).
+ *
+ * @param {unknown} value
+ * @returns {FacingMode}
+ */
+export function readFacingMode(value) {
+  return value === 'user' || value === 'environment' ? value : DEFAULT_FACING_MODE;
+}
+
+/**
+ * getUserMedia video constraints for the chosen camera. `ideal` rather than
+ * `exact`, so a device that can't honour the choice (a laptop with one
+ * webcam) still gets a picture instead of an OverconstrainedError.
+ *
+ * @param {FacingMode} facingMode
+ * @returns {MediaTrackConstraints}
+ */
+export function buildVideoConstraints(facingMode) {
+  return { facingMode: { ideal: facingMode } };
+}
+
+/**
+ * Whether the front/back toggle is worth showing: only when the device
+ * reports more than one camera. Browsers only list cameras fully once
+ * camera permission is granted, so this is meant to be asked after the
+ * first stream starts.
+ *
+ * @param {Array<{ kind: string }>} devices from enumerateDevices()
+ * @returns {boolean}
+ */
+export function hasMultipleCameras(devices) {
+  return Array.isArray(devices) && devices.filter((device) => device?.kind === 'videoinput').length > 1;
+}
