@@ -24,7 +24,7 @@ const upload = multer({
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function isValidUuid(value: string | undefined): value is string {
+function isValidUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID_RE.test(value);
 }
 
@@ -35,6 +35,11 @@ function parseCheckpoint(value: string | undefined): number | undefined {
   }
   const checkpoint = Number(value);
   return Number.isInteger(checkpoint) && checkpoint >= 1 ? checkpoint : undefined;
+}
+
+/** Like parseCheckpoint, but for a value already parsed from a JSON body. */
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1;
 }
 
 function describeError(err: unknown): string {
@@ -226,6 +231,115 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
         .type(upstream.headers.get('content-type') ?? 'application/json')
         .send(body);
     } catch (err) {
+      res.status(502).json({ error: `Could not reach the game server: ${describeError(err)}` });
+    }
+  });
+
+  // Relays a team's join request, for the same HTTPS/CORS reasons as the
+  // other relays. No validation of our own, and in particular `consent` is
+  // never added or defaulted here: it has to come from the player actually
+  // ticking a box that starts unticked, and the game-server alone decides
+  // whether the code/consent are valid (see issue #30). The body may carry
+  // the team's join code — never logged.
+  app.post('/join', express.json(), async (req: Request, res: ExpressResponse) => {
+    try {
+      const upstream = await fetchWithTimeout(
+        doFetch,
+        new URL('/join', config.gameServerUrl),
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req.body) },
+        config.gameServerTimeoutMs,
+      );
+      const body = await upstream.text();
+      res
+        .status(upstream.status)
+        .type(upstream.headers.get('content-type') ?? 'application/json')
+        .send(body);
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        res.status(504).json({ error: 'The game server took too long to respond' });
+        return;
+      }
+      res.status(502).json({ error: `Could not reach the game server: ${describeError(err)}` });
+    }
+  });
+
+  // Relays a participant's current state, for the same HTTPS/CORS reasons
+  // as the other relays. Validates session/participant as UUIDs before
+  // forwarding (400 otherwise, nothing sent upstream) — see issue #30.
+  app.get('/state', async (req: Request, res: ExpressResponse) => {
+    const { session, participant } = req.query as Record<string, string | undefined>;
+
+    if (!isValidUuid(session) || !isValidUuid(participant)) {
+      res.status(400).json({ error: 'session and participant must be valid UUIDs' });
+      return;
+    }
+
+    try {
+      const upstream = await fetchWithTimeout(
+        doFetch,
+        new URL(
+          `/sessions/${encodeURIComponent(session)}/participants/${encodeURIComponent(participant)}/state`,
+          config.gameServerUrl,
+        ),
+        {},
+        config.gameServerTimeoutMs,
+      );
+      const body = await upstream.text();
+      res
+        .status(upstream.status)
+        .type(upstream.headers.get('content-type') ?? 'application/json')
+        .send(body);
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        res.status(504).json({ error: 'The game server took too long to respond' });
+        return;
+      }
+      res.status(502).json({ error: `Could not reach the game server: ${describeError(err)}` });
+    }
+  });
+
+  // Relays a checkpoint arrival, for the same HTTPS/CORS reasons as the
+  // other relays. Validates session/participant as UUIDs and checkpoint as
+  // an integer >= 1 (400 otherwise, nothing sent upstream), then sends
+  // upstream only { checkpoint } — session/participant are already encoded
+  // into the upstream URL path, matching its shape (see issue #30). The
+  // response carries a short-lived, team-private code — never logged.
+  app.post('/arrive', express.json(), async (req: Request, res: ExpressResponse) => {
+    const { session, participant, checkpoint } = (req.body ?? {}) as Record<string, unknown>;
+
+    if (!isValidUuid(session) || !isValidUuid(participant)) {
+      res.status(400).json({ error: 'session and participant must be valid UUIDs' });
+      return;
+    }
+    if (!isPositiveInteger(checkpoint)) {
+      res.status(400).json({ error: 'checkpoint must be an integer >= 1' });
+      return;
+    }
+
+    try {
+      const upstream = await fetchWithTimeout(
+        doFetch,
+        new URL(
+          `/sessions/${encodeURIComponent(session)}/participants/${encodeURIComponent(participant)}/arrive`,
+          config.gameServerUrl,
+        ),
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ checkpoint }),
+        },
+        config.gameServerTimeoutMs,
+      );
+      const body = await upstream.text();
+      res
+        .status(upstream.status)
+        .type(upstream.headers.get('content-type') ?? 'application/json')
+        .send(body);
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        res.status(504).json({ error: 'The game server took too long to respond' });
+        return;
+      }
       res.status(502).json({ error: `Could not reach the game server: ${describeError(err)}` });
     }
   });
