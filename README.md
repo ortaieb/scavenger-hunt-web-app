@@ -196,9 +196,9 @@ in-process via supertest.
 
 The image is built in three stages — compile, production dependencies, and a
 [distroless](https://github.com/GoogleContainerTools/distroless) runtime that
-runs as the unprivileged `nonroot` user. By default it has no shell or
-package manager; see "Debugging a running container" below for the on-demand
-variant that does.
+runs as the unprivileged `nonroot` user. The runtime base is controlled by
+the `RUNTIME_TAG` build arg; see "Shell access" below for the trade-off
+between the two values it accepts.
 
 ```bash
 docker build -t scavenger-hunt-web-app .
@@ -211,32 +211,30 @@ certificate and set `TLS_KEY_PATH`/`TLS_CERT_PATH`, or terminate TLS at a
 reverse proxy in front of it.
 
 It also carries a `HEALTHCHECK` hitting `/health` — since distroless has no
-shell or curl, it's a plain `node` script (at `/nodejs/bin/node`, the
+`curl` either way, it's a plain `node` script (at `/nodejs/bin/node`, the
 image's own entrypoint binary; not on `PATH` for a separate `exec` the way
-it is as the container's ENTRYPOINT).
+it is as the container's ENTRYPOINT). This works the same regardless of
+`RUNTIME_TAG`.
 
-### Debugging a running container
+### Shell access
 
-Because the default image has no shell, tools that need one — `docker exec`,
-Railway's dashboard "console" — can't open into it (see issue #28). The app
-itself is unaffected either way; this only blocks interactive debugging.
+`RUNTIME_TAG` picks the distroless variant the runtime stage builds from:
 
-For that, build the same image against distroless's `debug-nonroot` tag
-instead, which adds BusyBox (a shell + core utilities) and nothing else —
-same user, same entrypoint, same everything:
+- **`debug-nonroot`** (current default — see issue #34): adds BusyBox (a
+  shell + core utilities) on top of the hardened base, so tools that need to
+  open a shell into the running container — `docker exec`, Railway's
+  dashboard "console" — work:
+  ```bash
+  docker exec -it <container> /busybox/sh
+  ```
+- **`nonroot`**: the hardened image with no shell or package manager at all.
+  Build with `docker build --build-arg RUNTIME_TAG=nonroot ...` to get it —
+  same user, same entrypoint, same everything else, just without BusyBox.
 
-```bash
-docker build --build-arg RUNTIME_TAG=debug-nonroot -t scavenger-hunt-web-app:debug .
-docker run -d -p 3000:3000 --name web-app-debug scavenger-hunt-web-app:debug
-docker exec -it web-app-debug /busybox/sh   # a real shell, into the running app
-```
-
-To get this on Railway: build and push that image to GHCR under a distinct
-tag (e.g. `<sha>-debug`, never `:latest` or the plain `<sha>` tag), point
-the Railway service at it temporarily via the dashboard, debug via its
-console, then point the service back at the real tag. Never leave a
-`debug-nonroot` build as the deployed image — the whole point of the
-default is staying shell-less.
+Neither affects the app itself (same user, same entrypoint, same
+`HEALTHCHECK`) — this is purely a trade-off between a smaller attack
+surface (`nonroot`) and the ability to shell in for interactive debugging
+(`debug-nonroot`).
 
 ### Deploying to Railway
 
