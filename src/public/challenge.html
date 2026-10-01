@@ -25,6 +25,12 @@
         <p id="challenge-pose"></p>
       </section>
 
+      <fieldset id="camera-toggle" class="camera-toggle" hidden>
+        <legend>Camera</legend>
+        <label><input type="radio" name="camera" value="environment" checked /> Back</label>
+        <label><input type="radio" name="camera" value="user" /> Front (selfie)</label>
+      </fieldset>
+
       <div class="camera-frame">
         <video id="preview" autoplay playsinline muted></video>
         <canvas id="snapshot" hidden></canvas>
