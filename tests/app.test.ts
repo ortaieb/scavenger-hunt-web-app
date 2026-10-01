@@ -433,6 +433,305 @@ describe('GET /checkpoint/challenge', () => {
   });
 });
 
+describe('POST /join', () => {
+  const joinRequest = { code: 'FOX-7Q2K', consent: true };
+  const joinResponse = {
+    participant: '7c860ccc-9adf-4e22-b54f-3ff158f5d600',
+    team: 'Red Foxes',
+    session: {
+      id: 'aeffe667-4f9f-4108-b5e2-56ae821fe413',
+      name: 'Hyde Park Saturday Hunt',
+      location: 'Hyde Park and Kensington Gardens, London',
+      'start-time': '2026-10-03T10:00:00+01:00',
+      'end-time': '2026-10-03T13:00:00+01:00',
+    },
+    checkpoints: 3,
+  };
+
+  it('relays to the correct URL and passes a 201 through unchanged', async () => {
+    const fetchMock: typeof fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(joinResponse), {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/join')
+      .send(joinRequest);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [calledUrl] = vi.mocked(fetchMock).mock.calls[0]!;
+    expect((calledUrl as URL).href).toBe('http://game-server.test/join');
+
+    expect(response.status).toBe(201);
+    expect(response.body).toEqual(joinResponse);
+  });
+
+  it('forwards the body unchanged, including one with no consent key at all', async () => {
+    let capturedBody: string | undefined;
+    const fetchMock: typeof fetch = vi.fn((_input, init?: FetchInit) => {
+      capturedBody = init?.body as string;
+      return Promise.resolve(new Response(JSON.stringify({ detail: 'consent is required' }), { status: 422 }));
+    });
+
+    // No "consent" field at all — this app must never add or default it.
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/join')
+      .send({ code: 'FOX-7Q2K' });
+
+    expect(JSON.parse(capturedBody as string)).toEqual({ code: 'FOX-7Q2K' });
+    expect(response.status).toBe(422);
+  });
+
+  it.each([
+    [404, { detail: 'unknown code' }],
+    [409, { detail: 'session has ended' }],
+    [422, { detail: 'consent must be true' }],
+  ])('passes back status and body unchanged for %i', async (status, body) => {
+    const fetchMock: typeof fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }),
+      ),
+    );
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/join')
+      .send(joinRequest);
+
+    expect(response.status).toBe(status);
+    expect(response.body).toEqual(body);
+  });
+
+  it('returns 502 when the game server cannot be reached', async () => {
+    const fetchMock: typeof fetch = vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED')));
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock })).post('/join').send(joinRequest);
+
+    expect(response.status).toBe(502);
+    expect((response.body as ErrorBody).error).toContain('connect ECONNREFUSED');
+  });
+
+  it('returns 504 when the game server does not respond within the configured timeout', async () => {
+    // A genuinely short real timeout rather than faked — see the equivalent
+    // POST /challenge test for why.
+    const fetchMock: typeof fetch = vi.fn((_input, init?: FetchInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        });
+      }),
+    );
+
+    const response = await request(createApp({ ...testConfig, gameServerTimeoutMs: 30 }, { fetch: fetchMock }))
+      .post('/join')
+      .send(joinRequest);
+
+    expect(response.status).toBe(504);
+  });
+});
+
+describe('GET /state', () => {
+  const stateResponse = {
+    status: 'playing',
+    team: 'Red Foxes',
+    progress: { completed: 1, total: 3 },
+    current: {
+      sequence: 2,
+      position: 2,
+      clue: 'He promised never to grow old; find him by the long water.',
+      open: true,
+    },
+  };
+
+  it('relays to the correct URL and passes a 200 through unchanged', async () => {
+    const fetchMock: typeof fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(stateResponse), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock })).get(
+      `/state?session=${VALID_SESSION}&participant=${VALID_PARTICIPANT}`,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [calledUrl] = vi.mocked(fetchMock).mock.calls[0]!;
+    expect((calledUrl as URL).href).toBe(
+      `http://game-server.test/sessions/${VALID_SESSION}/participants/${VALID_PARTICIPANT}/state`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(stateResponse);
+  });
+
+  it('passes back a 404 for an unknown session or participant, unchanged', async () => {
+    const fetchMock: typeof fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ detail: 'not found' }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock })).get(
+      `/state?session=${VALID_SESSION}&participant=${VALID_PARTICIPANT}`,
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ detail: 'not found' });
+  });
+
+  it.each([
+    ['missing session', `participant=${VALID_PARTICIPANT}`],
+    ['invalid session', `session=not-a-uuid&participant=${VALID_PARTICIPANT}`],
+    ['missing participant', `session=${VALID_SESSION}`],
+    ['invalid participant', `session=${VALID_SESSION}&participant=not-a-uuid`],
+  ])('rejects a request with %s, and sends nothing upstream', async (_label, query) => {
+    const fetchMock: typeof fetch = vi.fn();
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock })).get(`/state?${query}`);
+
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 502 when the game server cannot be reached', async () => {
+    const fetchMock: typeof fetch = vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED')));
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock })).get(
+      `/state?session=${VALID_SESSION}&participant=${VALID_PARTICIPANT}`,
+    );
+
+    expect(response.status).toBe(502);
+    expect((response.body as ErrorBody).error).toContain('connect ECONNREFUSED');
+  });
+
+  it('returns 504 when the game server does not respond within the configured timeout', async () => {
+    const fetchMock: typeof fetch = vi.fn((_input, init?: FetchInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        });
+      }),
+    );
+
+    const response = await request(
+      createApp({ ...testConfig, gameServerTimeoutMs: 30 }, { fetch: fetchMock }),
+    ).get(`/state?session=${VALID_SESSION}&participant=${VALID_PARTICIPANT}`);
+
+    expect(response.status).toBe(504);
+  });
+});
+
+describe('POST /arrive', () => {
+  const arriveRequest = { session: VALID_SESSION, participant: VALID_PARTICIPANT, checkpoint: 2 };
+  const arriveResponse = {
+    checkpoint: 2,
+    pose: 'Arms raised as if flying, facing the camera, with the landmark behind you.',
+    code: '4719',
+    'issued-at': '2026-10-03T09:41:05Z',
+    'expires-at': '2026-10-03T09:51:05Z',
+  };
+
+  it('relays to the correct URL, sends only checkpoint upstream, and passes a 201 through unchanged', async () => {
+    let capturedBody: string | undefined;
+    const fetchMock: typeof fetch = vi.fn((_input, init?: FetchInit) => {
+      capturedBody = init?.body as string;
+      return Promise.resolve(
+        new Response(JSON.stringify(arriveResponse), {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/arrive')
+      .send(arriveRequest);
+
+    const [calledUrl] = vi.mocked(fetchMock).mock.calls[0]!;
+    expect((calledUrl as URL).href).toBe(
+      `http://game-server.test/sessions/${VALID_SESSION}/participants/${VALID_PARTICIPANT}/arrive`,
+    );
+    expect(JSON.parse(capturedBody as string)).toEqual({ checkpoint: 2 });
+
+    expect(response.status).toBe(201);
+    expect(response.body).toEqual(arriveResponse);
+  });
+
+  it.each([
+    [409, { detail: "session hasn't started" }],
+    [409, { detail: 'not your current checkpoint' }],
+    [422, { detail: 'invalid checkpoint' }],
+    [404, { detail: 'not found' }],
+  ])('passes back status and body unchanged for %i', async (status, body) => {
+    const fetchMock: typeof fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }),
+      ),
+    );
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/arrive')
+      .send(arriveRequest);
+
+    expect(response.status).toBe(status);
+    expect(response.body).toEqual(body);
+  });
+
+  it.each([
+    ['missing session', { ...arriveRequest, session: undefined }],
+    ['invalid session', { ...arriveRequest, session: 'not-a-uuid' }],
+    ['missing participant', { ...arriveRequest, participant: undefined }],
+    ['invalid participant', { ...arriveRequest, participant: 'not-a-uuid' }],
+    ['missing checkpoint', { ...arriveRequest, checkpoint: undefined }],
+    ['non-integer checkpoint', { ...arriveRequest, checkpoint: 1.5 }],
+    ['checkpoint below 1', { ...arriveRequest, checkpoint: 0 }],
+    ['checkpoint as a string', { ...arriveRequest, checkpoint: '2' }],
+  ])('rejects a request with %s, and sends nothing upstream', async (_label, body) => {
+    const fetchMock: typeof fetch = vi.fn();
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock })).post('/arrive').send(body);
+
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 502 when the game server cannot be reached', async () => {
+    const fetchMock: typeof fetch = vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED')));
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/arrive')
+      .send(arriveRequest);
+
+    expect(response.status).toBe(502);
+    expect((response.body as ErrorBody).error).toContain('connect ECONNREFUSED');
+  });
+
+  it('returns 504 when the game server does not respond within the configured timeout', async () => {
+    const fetchMock: typeof fetch = vi.fn((_input, init?: FetchInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        });
+      }),
+    );
+
+    const response = await request(createApp({ ...testConfig, gameServerTimeoutMs: 30 }, { fetch: fetchMock }))
+      .post('/arrive')
+      .send(arriveRequest);
+
+    expect(response.status).toBe(504);
+  });
+});
+
 describe('unknown routes', () => {
   it('responds with 404', async () => {
     const response = await request(createApp(testConfig)).get('/nope');

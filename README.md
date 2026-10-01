@@ -140,6 +140,45 @@ npm run dev         # auto-detects the cert and serves HTTPS
 
 Accept the self-signed certificate warning in the browser to continue.
 
+### Game loop: /join, /state, /arrive
+
+Three more relays, for the game-server's game loop (day 4 there; the
+screens that call them are day 6 — see issue #30). Same pattern as the
+`/challenge` relays: validate what this app can and answer `400` without
+calling upstream when that fails, relay with `fetchWithTimeout` and
+`GAME_SERVER_TIMEOUT_MS` (`504` on a timeout, `502` when the game-server
+can't be reached), and otherwise pass the upstream status, content type and
+body straight back unchanged. The contracts below are copied from the
+game-server's own issues, since this repo can't see its README.
+
+**`POST /join` → `POST ${GAME_SERVER_URL}/join`** — forwards the JSON body
+unchanged: `{"code", "consent"}`. No validation of its own, and in
+particular **`consent` is never added or defaulted here** — it has to come
+from the player actually ticking a box that starts unticked. The
+game-server answers `201` on a team's first join or `200` on a repeat join,
+with the same shape either way: `{"participant", "team", "session": {"id",
+"name", "location", "start-time", "end-time"}, "checkpoints"}`; otherwise
+`404`, `409`, or `422` for an invalid body (including a `consent` that
+isn't `true`).
+
+**`GET /state?session=<uuid>&participant=<uuid>` → `GET
+${GAME_SERVER_URL}/sessions/{session}/participants/{participant}/state`** —
+both must be UUIDs (`400` otherwise). Response: `{"status", "team",
+"progress": {"completed", "total"}, "current": {"sequence", "position",
+"clue", "open"} | null}`; `status` is `not_started`/`playing`/`finished`/
+`ended`, and `current` is only non-null while `playing`.
+
+**`POST /arrive` → `POST
+${GAME_SERVER_URL}/sessions/{session}/participants/{participant}/arrive`**
+— takes `{"session", "participant", "checkpoint"}`, validates all three
+(UUIDs, and an integer >= 1), and sends upstream **only** `{"checkpoint"}`
+— session/participant are already in the URL path. Response: `{"checkpoint",
+"pose", "code", "issued-at", "expires-at"}` (`pose` can be `null`);
+otherwise `404`, `422`, or `409`.
+
+The `participant` id is a team's key to its clues and codes, and `/arrive`'s
+`code` is a short-lived secret — neither is ever logged by these relays.
+
 ## Scripts
 
 | Script              | Description                                  |
