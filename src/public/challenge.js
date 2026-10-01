@@ -97,23 +97,31 @@ function describeError(err) {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** A random UUID for the session/participant fields' default value. */
+/** A random UUID for the participant field's default value. */
 function generateUuid() {
   return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : '';
 }
 
+// TEMP (see issue #32): until there's a real session-join UI, the session
+// field defaults to this fixed, known id instead of a random one, so manual
+// testing against the game-server can reuse the same session repeatedly
+// rather than minting a new one on every page load. Revert to
+// generateUuid() once that UI exists.
+const TEMP_DEFAULT_SESSION_ID = 'aeffe667-4f9f-4108-b5e2-56ae821fe413';
+
 /**
  * Session and participant are editable fields, not fixed like checkpoint
  * (see issue #18) — pre-filled from the query string when it supplies a
- * valid UUID (so existing links keep working), a fresh random one
- * otherwise, and editable from there.
+ * valid UUID (so existing links keep working), a default otherwise, and
+ * editable from there. Participant's default is a fresh random UUID;
+ * session's is currently the fixed TEMP_DEFAULT_SESSION_ID (see issue #32).
  */
 function initIdentityFields() {
   const params = new URLSearchParams(window.location.search);
   const sessionFromQuery = params.get('session');
   const participantFromQuery = params.get('participant');
 
-  sessionInput.value = isValidUuid(sessionFromQuery) ? sessionFromQuery : generateUuid();
+  sessionInput.value = isValidUuid(sessionFromQuery) ? sessionFromQuery : TEMP_DEFAULT_SESSION_ID;
   participantInput.value = isValidUuid(participantFromQuery) ? participantFromQuery : generateUuid();
 }
 
