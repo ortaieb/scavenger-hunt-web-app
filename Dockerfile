@@ -2,13 +2,14 @@
 
 ARG NODE_VERSION=24
 ARG ALPINE_VERSION=3.22
-# "nonroot" (default): hardened, no shell/package manager — see below.
-# "debug-nonroot": the same image plus BusyBox (a shell + core utilities),
-# for on-demand interactive debugging (e.g. Railway's console, `docker exec`)
-# — see issue #28. Never the default: pass
-# --build-arg RUNTIME_TAG=debug-nonroot explicitly when you actually need a
-# shell; production should stay on the shell-less image.
-ARG RUNTIME_TAG=nonroot
+# "nonroot": hardened, no shell/package manager.
+# "debug-nonroot" (default for now): the same image plus BusyBox (a shell +
+# core utilities), so tools that need to open a shell into the running
+# container — Railway's console, `docker exec` — work (see issues #28/#34).
+# This trades away some of the hardening for that; pass
+# --build-arg RUNTIME_TAG=nonroot explicitly to go back to the shell-less
+# image once a shell isn't needed by default anymore.
+ARG RUNTIME_TAG=debug-nonroot
 
 # --- build: full toolchain, compiles TypeScript to dist/ ---------------------
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS build
@@ -25,7 +26,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
-# --- runtime: distroless, no shell or package manager by default, nonroot ---
+# --- runtime: distroless, nonroot user; shell present by default for now ----
 FROM gcr.io/distroless/nodejs${NODE_VERSION}-debian12:${RUNTIME_TAG} AS runtime
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000 HOST=0.0.0.0
@@ -37,8 +38,9 @@ EXPOSE 3000
 # The distroless image already runs as the unprivileged `nonroot` user (65532).
 USER nonroot
 
-# No shell or curl in this image (distroless), so the probe is a plain node
-# script hitting /health directly. PORT is read at HEALTHCHECK-run time, so
+# No curl in this image (distroless, even the debug-nonroot variant), so
+# the probe is a plain node script hitting /health directly, which works
+# regardless of RUNTIME_TAG. PORT is read at HEALTHCHECK-run time, so
 # a platform-injected override (e.g. Railway's) is honoured, not just the
 # ENV default above. /nodejs/bin/node is the image's own entrypoint binary
 # (see its Config.Entrypoint) — it isn't on PATH for a bare `exec`, unlike
