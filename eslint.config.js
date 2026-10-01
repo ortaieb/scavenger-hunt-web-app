@@ -40,6 +40,7 @@ export default tseslint.config(
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         crypto: 'readonly',
+        localStorage: 'readonly',
         console: 'readonly',
       },
     },

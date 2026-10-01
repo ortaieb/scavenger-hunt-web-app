@@ -12,11 +12,15 @@ import {
   describeAccuracyHint,
   describeProximityWarning,
   describeChallenge,
+  readFacingMode,
+  buildVideoConstraints,
+  hasMultipleCameras,
 } from './challenge-logic.js';
 
 const PROXIMITY_TIMEOUT_MS = 3000;
 const CHALLENGE_TIMEOUT_MS = 3000;
 const CHALLENGE_DEBOUNCE_MS = 500;
+const FACING_MODE_STORAGE_KEY = 'scavenger-hunt.facingMode';
 
 const statusEl = document.getElementById('status');
 const video = document.getElementById('preview');
@@ -32,12 +36,21 @@ const participantInput = document.getElementById('participant-input');
 const challengePanelEl = document.getElementById('challenge-panel');
 const challengePoseEl = document.getElementById('challenge-pose');
 const checklistEl = document.getElementById('verdict-checklist');
+const cameraToggleEl = document.getElementById('camera-toggle');
+const cameraRadios = cameraToggleEl.querySelectorAll('input[name="camera"]');
 
 const ICON_CLASS = { '✓': 'passed', '✗': 'failed', '?': 'uncertain' };
 
 let stream = null;
 let capturedBlob = null;
 let position = null;
+
+// Front/back camera choice (see issue #31), remembered across visits so a
+// solo player taking selfies doesn't have to re-pick it every time. A
+// request id guards against a slow getUserMedia from an earlier choice
+// (e.g. quick back-and-forth toggling) landing after a newer one.
+let facingMode = readFacingMode(loadStoredFacingMode());
+let latestCameraRequestId = 0;
 
 // The courtesy hints (accuracy + proximity) are independent, but shown
 // together in one element. A fix id guards against a slow proximity
@@ -212,6 +225,46 @@ function scheduleChallengeFetch() {
   }, CHALLENGE_DEBOUNCE_MS);
 }
 
+/** localStorage can throw (private mode, blocked storage) — treat as unset. */
+function loadStoredFacingMode() {
+  try {
+    return localStorage.getItem(FACING_MODE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function storeFacingMode(mode) {
+  try {
+    localStorage.setItem(FACING_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Not remembering the choice is fine; it still applies to this visit.
+  }
+}
+
+/**
+ * Shows the front/back toggle only on devices with more than one camera.
+ * Asked after a stream starts, since browsers only list cameras fully once
+ * permission is granted.
+ */
+async function updateCameraToggle() {
+  let devices = [];
+  try {
+    devices = await navigator.mediaDevices.enumerateDevices();
+  } catch {
+    // Can't tell — leave the toggle hidden rather than offer a no-op.
+  }
+  // Only before taking the picture: the toggle stays hidden once a photo
+  // has been captured, until Retake brings the preview back.
+  cameraToggleEl.hidden = !hasMultipleCameras(devices) || video.hidden;
+}
+
+function onCameraToggleChange(event) {
+  facingMode = readFacingMode(event.target.value);
+  storeFacingMode(facingMode);
+  void startCamera();
+}
+
 async function startCamera() {
   if (!navigator.mediaDevices?.getUserMedia) {
     setStatus('Camera capture is not supported in this browser.');
@@ -219,17 +272,42 @@ async function startCamera() {
     return;
   }
 
+  const requestId = ++latestCameraRequestId;
+  // Release the current camera first: several mobile browsers (notably iOS
+  // Safari) can't open a second camera while one is still streaming.
+  stopCamera();
+  captureBtn.disabled = true;
+
+  let newStream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' } },
+    newStream = await navigator.mediaDevices.getUserMedia({
+      video: buildVideoConstraints(facingMode),
       audio: false,
     });
-    video.srcObject = stream;
-    setStatus('Point the camera and take a photo.');
   } catch (err) {
-    setStatus(`Camera access failed: ${describeError(err)}`);
-    captureBtn.disabled = true;
+    if (requestId === latestCameraRequestId) {
+      setStatus(`Camera access failed: ${describeError(err)}`);
+    }
+    return;
   }
+
+  if (requestId !== latestCameraRequestId) {
+    // Superseded by a newer toggle while this one was opening.
+    newStream.getTracks().forEach((track) => {
+      track.stop();
+    });
+    return;
+  }
+
+  stream = newStream;
+  video.srcObject = stream;
+  // Mirror by what the device actually opened, falling back to what was
+  // asked for when the browser doesn't report it.
+  const actualFacingMode = stream.getVideoTracks()[0]?.getSettings?.().facingMode ?? facingMode;
+  video.classList.toggle('mirrored', actualFacingMode === 'user');
+  captureBtn.disabled = false;
+  setStatus('Point the camera and take a photo.');
+  void updateCameraToggle();
 }
 
 function stopCamera() {
@@ -346,6 +424,7 @@ function capturePhoto() {
       captureBtn.hidden = true;
       retakeBtn.hidden = false;
       submitBtn.hidden = false;
+      cameraToggleEl.hidden = true;
 
       stopCamera();
       requestLocation();
@@ -451,6 +530,10 @@ submitBtn.addEventListener('click', () => {
   void submitCapture();
 });
 sessionInput.addEventListener('input', scheduleChallengeFetch);
+cameraRadios.forEach((radio) => {
+  radio.checked = radio.value === facingMode;
+  radio.addEventListener('change', onCameraToggleChange);
+});
 
 initIdentityFields();
 // Fires once the session field already holds a valid UUID at load, going

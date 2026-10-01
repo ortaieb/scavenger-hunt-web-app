@@ -127,6 +127,52 @@ h1 {
   color: #f3f4f6;
 }
 
+.camera-toggle {
+  margin: 0 0 0.75rem;
+  padding: 0.25rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: #1a1d24;
+  display: flex;
+  gap: 0.25rem;
+}
+
+.camera-toggle legend {
+  /* Visually hidden, still announced to screen readers. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.camera-toggle label {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  text-align: center;
+  font-size: 0.9rem;
+  color: #9ca3af;
+  cursor: pointer;
+}
+
+.camera-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.camera-toggle label:has(input:checked) {
+  background: #4f46e5;
+  color: #fff;
+}
+
+.camera-toggle label:has(input:focus-visible) {
+  outline: 2px solid #a5b4fc;
+  outline-offset: 2px;
+}
+
 .camera-frame {
   position: relative;
   width: 100%;
@@ -142,6 +188,12 @@ h1 {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+/* Front camera: mirror the live preview only, like a mirror/selfie view. The
+   captured photo is drawn from the raw frame, so it's never mirrored. */
+.camera-frame video.mirrored {
+  transform: scaleX(-1);
 }
 
 .controls {

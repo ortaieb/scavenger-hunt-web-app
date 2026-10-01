@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildVideoConstraints,
+  DEFAULT_FACING_MODE,
   describeAccuracyHint,
   describeChallenge,
   describeProximityWarning,
   describeVerdict,
+  hasMultipleCameras,
   isValidUuid,
   readCheckpointFromQuery,
+  readFacingMode,
 } from '../src/public/challenge-logic.js';
 
 const VALID_SESSION = '11111111-1111-4111-8111-111111111111';
@@ -301,5 +305,44 @@ describe('describeChallenge', () => {
 
   it.each([429, 500, 502])('returns null (hide) for a %i response', (status) => {
     expect(describeChallenge(status, { pose: 'Stand next to the red door' })).toBeNull();
+  });
+});
+
+describe('readFacingMode', () => {
+  it('defaults to the rear camera', () => {
+    expect(DEFAULT_FACING_MODE).toBe('environment');
+  });
+
+  it.each(['user', 'environment'])('keeps a valid choice (%s)', (mode) => {
+    expect(readFacingMode(mode)).toBe(mode);
+  });
+
+  it.each([null, undefined, '', 'front', 'USER', 42])('falls back to the rear camera for %j', (value) => {
+    expect(readFacingMode(value)).toBe('environment');
+  });
+});
+
+describe('buildVideoConstraints', () => {
+  it.each(['user', 'environment'] as const)('asks for the %s camera as a preference, not a requirement', (mode) => {
+    expect(buildVideoConstraints(mode)).toEqual({ facingMode: { ideal: mode } });
+  });
+});
+
+describe('hasMultipleCameras', () => {
+  it('is true with two or more cameras', () => {
+    expect(
+      hasMultipleCameras([{ kind: 'videoinput' }, { kind: 'audioinput' }, { kind: 'videoinput' }]),
+    ).toBe(true);
+  });
+
+  it('is false with a single camera, however many other devices', () => {
+    expect(hasMultipleCameras([{ kind: 'videoinput' }, { kind: 'audioinput' }, { kind: 'audiooutput' }])).toBe(
+      false,
+    );
+  });
+
+  it('is false with no devices or a bad value', () => {
+    expect(hasMultipleCameras([])).toBe(false);
+    expect(hasMultipleCameras(null as unknown as [])).toBe(false);
   });
 });
