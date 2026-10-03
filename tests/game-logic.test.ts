@@ -18,6 +18,15 @@ import {
   showsStatusBar,
   teamLabel,
   timeLeftFor,
+  checkpointAfterArrive,
+  checkpointAfterPhoto,
+  checkpointAfterRetake,
+  checkpointAfterVerdict,
+  checkpointSending,
+  codeExpired,
+  codeTimeLeft,
+  pollIntervalFor,
+  verdictHeading,
 } from '../src/public/game-logic.js';
 
 const identity = {
@@ -55,7 +64,7 @@ describe('screenFor', () => {
 
   it.each([
     ['not_started', 'lobby'],
-    ['playing', 'playing'],
+    ['playing', 'clue'],
     ['finished', 'finished'],
     ['ended', 'ended'],
     ['something_new', 'loading'],
@@ -95,32 +104,32 @@ describe('instructionFor', () => {
     ],
     [
       'code issued',
-      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'code' } },
+      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'code', sequence: 2 } },
       'Strike the pose and take the photo.',
     ],
     [
       'photo taken',
-      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'photo' } },
+      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'photo', sequence: 2 } },
       'Check your photo, then send it.',
     ],
     [
       'sending',
-      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'sending' } },
+      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'sending', sequence: 2 } },
       'The referee is checking your photo.',
     ],
     [
       'verdict pass',
-      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'verdict', verdict: 'pass' } },
+      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'verdict', sequence: 2, verdict: 'pass' } },
       'Checkpoint done. Tap "Next clue".',
     ],
     [
       'verdict pending',
-      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'verdict', verdict: 'pending' } },
+      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'verdict', sequence: 2, verdict: 'pending' } },
       'A moderator will check your photo. Tap "Next clue".',
     ],
     [
       'verdict failed',
-      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'verdict', verdict: 'failed' } },
+      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'verdict', sequence: 2, verdict: 'failed' } },
       'Not quite. Read why, then tap "Try again".',
     ],
     [
@@ -283,7 +292,11 @@ describe('status bar', () => {
       ['permissions', false],
       ['loading', false],
       ['lobby', true],
-      ['playing', true],
+      ['clue', true],
+      ['capture', true],
+      ['review', true],
+      ['checking', true],
+      ['verdict', true],
       ['finished', true],
       ['ended', true],
     ] as const)('%s → %s', (screen, shown) => {
@@ -441,7 +454,7 @@ describe('status bar', () => {
     });
 
     it('shows the clue once past the Clue screen', () => {
-      expect(clueLineFor(app(running, { checkpoint: { step: 'code' } }))).toEqual({
+      expect(clueLineFor(app(running, { checkpoint: { step: 'code', sequence: 2 } }))).toEqual({
         text: playing.current.clue,
         isClue: true,
         hidden: false,
@@ -458,6 +471,226 @@ describe('status bar', () => {
 
     it('is hidden before the lobby', () => {
       expect(clueLineFor({ identity: null, permissions: 'unknown', state: null }).hidden).toBe(true);
+    });
+  });
+});
+
+describe('playing a checkpoint', () => {
+  const arriveBody = {
+    checkpoint: 2,
+    pose: 'Arms raised as if flying.',
+    code: '4821',
+    'issued-at': '2026-10-03T09:41:05Z',
+    'expires-at': '2026-10-03T09:51:05Z',
+  };
+  const issued = { value: '4821', pose: 'Arms raised as if flying.', issuedAt: arriveBody['issued-at'], expiresAt: arriveBody['expires-at'] };
+  const app = (checkpoint: Record<string, unknown> | null, state: Record<string, unknown> = playing) => ({
+    identity,
+    permissions: 'granted' as const,
+    state: state as never,
+    checkpoint: checkpoint as never,
+  });
+
+  /** Real POST /challenge response bodies, with the server's `check` field (see issue #38). */
+  function verdictBody(verdict: string, extra: Record<string, unknown> = {}) {
+    return JSON.stringify({
+      verdict: {
+        game: 'hunt-1',
+        participant: identity.participant,
+        checkpoint: {
+          sequence: 2,
+          attempt: 2,
+          time: '2026-10-03T09:45:00Z',
+          verdict,
+          checks: [
+            { check: 'window_open', outcome: 'passed', confidence: 1, reason: 'Open.' },
+            { check: 'photo_unique', outcome: 'skipped', confidence: 0, reason: 'Not checked.' },
+            { check: 'pose_correct', outcome: verdict === 'failed' ? 'failed' : 'passed', confidence: 0.9, reason: 'Pose.' },
+          ],
+          rejections: verdict === 'failed' ? [{ code: 'pose_mismatch', message: "Your pose doesn't match the challenge." }] : [],
+          ...extra,
+        },
+      },
+      image_id: 'img-1',
+    });
+  }
+
+  describe('screens', () => {
+    it.each([
+      ['no progress yet', null, 'clue'],
+      ['a code issued', { step: 'code', sequence: 2 }, 'capture'],
+      ['a photo taken', { step: 'photo', sequence: 2 }, 'review'],
+      ['the photo sending', { step: 'sending', sequence: 2 }, 'checking'],
+      ['a verdict back', { step: 'verdict', sequence: 2, verdict: 'failed' }, 'verdict'],
+    ])('shows the right screen with %s', (_label, checkpoint, screen) => {
+      expect(screenFor(app(checkpoint))).toBe(screen);
+    });
+
+    it('goes back to the clue when the server has moved on to another checkpoint', () => {
+      expect(screenFor(app({ step: 'code', sequence: 1 }))).toBe('clue');
+    });
+
+    it('keeps a pass up after the server has moved on, until "Next clue"', () => {
+      const next = { ...playing, current: { ...playing.current, sequence: 3 } };
+      expect(screenFor(app({ step: 'verdict', sequence: 2, verdict: 'pass' }, next))).toBe('verdict');
+    });
+
+    it('keeps the last pass up after the server says finished', () => {
+      const finished = { ...playing, status: 'finished', current: null };
+      expect(screenFor(app({ step: 'verdict', sequence: 3, verdict: 'pass' }, finished))).toBe('verdict');
+      expect(screenFor(app(null, finished))).toBe('finished');
+    });
+
+    it('drops everything once the session is over', () => {
+      const ended = { ...playing, status: 'ended', current: null };
+      expect(screenFor(app({ step: 'photo', sequence: 2 }, ended))).toBe('ended');
+    });
+  });
+
+  describe("checkpointAfterArrive (I'm here, Try again, code expiry)", () => {
+    it.each([200, 201])('shows the code on Capture for a %i', (status) => {
+      expect(checkpointAfterArrive(null, 2, status, arriveBody)).toEqual({
+        checkpoint: { step: 'code', sequence: 2, code: issued },
+        error: null,
+      });
+    });
+
+    it('hides the pose when it is null', () => {
+      expect(checkpointAfterArrive(null, 2, 201, { ...arriveBody, pose: null }).checkpoint?.code?.pose).toBeNull();
+    });
+
+    it('Try again after a failed verdict goes back to Capture with a fresh code', () => {
+      const failed = { step: 'verdict' as const, sequence: 2, verdict: 'failed' as const };
+      const result = checkpointAfterArrive(failed, 2, 201, { ...arriveBody, code: '9150' });
+
+      expect(result.checkpoint?.step).toBe('code');
+      expect(result.checkpoint?.code?.value).toBe('9150');
+      expect(screenFor(app(result.checkpoint))).toBe('capture');
+    });
+
+    it('a code that expires on Review is replaced quietly, keeping the photo', () => {
+      const review = { step: 'photo' as const, sequence: 2, code: issued };
+      const result = checkpointAfterArrive(review, 2, 200, { ...arriveBody, code: '7302' });
+
+      expect(result.checkpoint).toEqual({ step: 'photo', sequence: 2, code: { ...issued, value: '7302' } });
+      expect(screenFor(app(result.checkpoint))).toBe('review');
+    });
+
+    it('a code that expires on Capture is replaced, staying on Capture', () => {
+      const capture = { step: 'code' as const, sequence: 2, code: issued };
+      const result = checkpointAfterArrive(capture, 2, 200, { ...arriveBody, code: '7302' });
+
+      expect(screenFor(app(result.checkpoint))).toBe('capture');
+    });
+
+    it('keeps the previous progress and reports an error when arrive is refused', () => {
+      const result = checkpointAfterArrive(null, 2, 409, { detail: 'not your current checkpoint' });
+
+      expect(result.checkpoint).toBeNull();
+      expect(result.error?.screen).toBeNull();
+      expect(result.error?.message).toContain("Couldn't check in");
+    });
+
+    it('follows the game-server code when there is one', () => {
+      const result = checkpointAfterArrive(null, 2, 409, { detail: '…', code: 'session_stopped' });
+      expect(result.error?.screen).toBe('ended');
+    });
+
+    it('treats a 2xx without a code as an error', () => {
+      expect(checkpointAfterArrive(null, 2, 201, {}).error?.message).toBe('Something went wrong. Please try again.');
+    });
+  });
+
+  describe('photo, retake and send', () => {
+    const capture = { step: 'code' as const, sequence: 2, code: issued };
+
+    it('Take photo → Review, Retake → Capture, Send → Checking', () => {
+      const review = checkpointAfterPhoto(capture);
+      expect(screenFor(app(review))).toBe('review');
+      expect(screenFor(app(checkpointAfterRetake(review)))).toBe('capture');
+      expect(screenFor(app(checkpointSending(review)))).toBe('checking');
+    });
+  });
+
+  describe('checkpointAfterVerdict', () => {
+    const sending = { step: 'sending' as const, sequence: 2, code: issued };
+
+    it.each([
+      ['pass', 200, '✓ Checkpoint done', 'Checkpoint done. Tap "Next clue".'],
+      ['pending', 202, '? In review', 'A moderator will check your photo. Tap "Next clue".'],
+      ['failed', 200, '✗ Not quite', 'Not quite. Read why, then tap "Try again".'],
+    ] as const)('a %s goes to the Verdict screen', (verdict, status, heading, instruction) => {
+      const checkpoint = checkpointAfterVerdict(sending, status, verdictBody(verdict));
+
+      expect(checkpoint.step).toBe('verdict');
+      expect(checkpoint.verdict).toBe(verdict);
+      expect(screenFor(app(checkpoint))).toBe('verdict');
+      expect(verdictHeading(checkpoint)).toBe(heading);
+      expect(instructionFor(app(checkpoint))).toBe(instruction);
+    });
+
+    it('lists the checks with their labels, hiding skipped ones', () => {
+      const checkpoint = checkpointAfterVerdict(sending, 200, verdictBody('failed'));
+
+      expect(checkpoint.display?.checklist).toEqual([
+        { icon: '✓', label: 'Checkpoint open', reason: 'Open.' },
+        { icon: '✗', label: 'Right pose', reason: 'Pose.' },
+      ]);
+      expect(checkpoint.display?.message).toContain("Your pose doesn't match the challenge.");
+    });
+
+    it('goes back to Review, keeping the photo, when the send fails', () => {
+      const checkpoint = checkpointAfterVerdict(sending, 504, '{"error":"The game server took too long to respond"}');
+
+      expect(screenFor(app(checkpoint))).toBe('review');
+      expect(checkpoint.message).toBe('The referee took too long. Please try again.');
+    });
+
+    it('says the photo is kept when there was no connection', () => {
+      const checkpoint = checkpointAfterVerdict(sending, 0, '');
+
+      expect(screenFor(app(checkpoint))).toBe('review');
+      expect(checkpoint.message).toContain('Your photo is kept');
+    });
+  });
+
+  describe('code expiry', () => {
+    const capture = { step: 'code' as const, sequence: 2, code: issued };
+    const expires = Date.parse(issued.expiresAt);
+
+    it('has not expired before expires-at', () => {
+      expect(codeExpired(capture, expires - 1)).toBe(false);
+      expect(codeTimeLeft(capture, expires - (9 * 60_000 + 41_000))).toBe('9:41 left');
+    });
+
+    it('has expired at and after expires-at', () => {
+      expect(codeExpired(capture, expires)).toBe(true);
+      expect(codeExpired(capture, expires + 5_000)).toBe(true);
+      expect(codeTimeLeft(capture, expires + 5_000)).toBe('0:00 left');
+    });
+
+    it('never expires without a known expiry', () => {
+      expect(codeExpired({ step: 'code', sequence: 2 }, expires)).toBe(false);
+      expect(codeTimeLeft({ step: 'code', sequence: 2 }, expires)).toBe('');
+    });
+  });
+
+  describe('clue row and polling', () => {
+    it('shows the clue in the status bar once past the Clue screen', () => {
+      expect(clueLineFor(app({ step: 'photo', sequence: 2 })).hidden).toBe(false);
+      expect(clueLineFor(app(null)).hidden).toBe(true);
+    });
+
+    it.each([
+      ['lobby', 10_000],
+      ['clue', 10_000],
+      ['capture', 30_000],
+      ['review', 30_000],
+      ['checking', 0],
+      ['verdict', 0],
+      ['join', 0],
+    ] as const)('polls %s every %i ms', (screen, ms) => {
+      expect(pollIntervalFor(screen)).toBe(ms);
     });
   });
 });
