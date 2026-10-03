@@ -33,7 +33,23 @@ on the right screen.
 | Join | No stored identity: team code (upper-cased as typed), the photo privacy summary, an **unticked** consent box, links to the privacy notice and "How to play" |
 | Permissions | After join, until camera and location have been granted once: explains why, then asks for the camera, then location, on one tap; if refused, steps for iPhone Safari and Android Chrome, then Try again |
 | Lobby | `status: not_started`: team, session name, area and planned start; polls `GET /state` every 10 s (at once when the page becomes visible again, never while hidden) |
-| Clue, Finished, Session over | Placeholders until issues #42 and #43; the clue placeholder also polls every 10 s |
+| Clue | `playing`, no code yet: the clue in large type and **I'm here** (disabled, with the reason, while `current.open` is false), which calls `POST /arrive` with `current.sequence` |
+| Capture | A code issued (`201` or `200`): the code and its countdown, the pose (hidden when `null`), the live camera with a front/back switch, and the advisory "you may be outside the area" note |
+| Review | A photo taken: the photo, Retake and **Send**, which posts to `POST /challenge` with the stored identity and `current.sequence` as `checkpoint` |
+| Checking | The upload in flight: "Usually under 10 seconds" |
+| Verdict | The server's verdict: done, in review or not quite, with the per-check list (skipped checks hidden) and the new points total; **Next clue** reloads `GET /state`, **Try again** arrives again for a fresh code |
+| Finished, Session over | Placeholders until issue #43 |
+
+Playing a checkpoint (issue #42): the code is issued and shown but **not
+checked by the referee yet**, so teams don't need it in the photo. If it
+expires before Send, the app quietly arrives again for a fresh one and keeps
+the photo. A failed send (no signal, a timeout) goes back to Review with the
+photo kept. Progress within a checkpoint lives in memory only: after a
+reload the team is back on the Clue, and I'm here issues a fresh code.
+`GET /state` is polled every 10 s on the Clue and every 30 s on Capture and
+Review (not while checking or on a verdict). The camera stops when the page
+is hidden and restarts on return. The camera and location code is shared
+with `/challenge`, in `camera.js`.
 
 From the lobby on, a sticky **status bar** (issue #41) shows the team (cut at
 14 characters), checkpoints completed ("1 of 3", "3 of 3 ✓" when finished),
@@ -308,7 +324,8 @@ src/
     api.js              /play's calls to this app's relays, with timeouts
     play.js             /play's DOM/permissions/polling wiring
     challenge-logic.js  pure identity/verdict/hint logic, unit tested directly
-    challenge.js        DOM/camera/fetch wiring, imports challenge-logic.js
+    camera.js           camera, location and proximity code shared by /play and /challenge
+    challenge.js        DOM/fetch wiring for /challenge, imports challenge-logic.js and camera.js
 docs/          player-facing docs, served at /privacy and /how-to-play
 scripts/       dev tooling (self-signed cert generation)
 tests/         Vitest suites
