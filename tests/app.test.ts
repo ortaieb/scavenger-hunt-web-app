@@ -16,6 +16,10 @@ interface ErrorBody {
 
 type FetchInit = Parameters<typeof fetch>[1];
 
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
 describe('fetchWithTimeout', () => {
   // Pure function, no HTTP/supertest involved, so fake timers are safe here
   // — unlike in the POST /challenge 504 test below, which goes through a
@@ -729,6 +733,212 @@ describe('POST /arrive', () => {
       .send(arriveRequest);
 
     expect(response.status).toBe(504);
+  });
+});
+
+describe('moderator relays', () => {
+  const MODERATOR_AUTH = 'Bearer moderator-secret';
+  const clock = {
+    phase: 'running',
+    'planned-start': '2026-10-03T10:00:00+01:00',
+    'planned-end': '2026-10-03T13:00:00+01:00',
+    'started-at': '2026-10-03T09:02:11Z',
+    'stopped-at': null,
+    'server-time': '2026-10-03T09:02:11Z',
+  };
+  const overview = {
+    session: clock,
+    teams: [
+      {
+        team: 'Red Foxes',
+        joined: true,
+        completed: 1,
+        total: 3,
+        points: 7,
+        'in-review': 0,
+        place: null,
+        'last-completed': { sequence: 1, name: 'Stone fountain', verdict: 'pass', at: '2026-10-03T09:58:10Z' },
+        current: { sequence: 2, name: 'Boy who never grew up' },
+      },
+    ],
+    blocked: [{ at: '2026-10-03T13:05:02Z', team: 'Blue Herons', action: 'photo', code: 'session_stopped' }],
+  };
+
+  // Each relay, with how to call it for a given session and what it relays to.
+  const relays = [
+    {
+      name: 'POST /moderator/start',
+      method: 'POST',
+      upstreamPath: 'start',
+      success: { status: 201, body: clock },
+      send: (app: ReturnType<typeof createApp>, session: unknown) =>
+        request(app).post('/moderator/start').send({ session }),
+    },
+    {
+      name: 'POST /moderator/stop',
+      method: 'POST',
+      upstreamPath: 'stop',
+      success: { status: 200, body: { ...clock, phase: 'stopped', 'stopped-at': '2026-10-03T12:00:00Z' } },
+      send: (app: ReturnType<typeof createApp>, session: unknown) =>
+        request(app).post('/moderator/stop').send({ session }),
+    },
+    {
+      name: 'GET /moderator/overview',
+      method: 'GET',
+      upstreamPath: 'overview',
+      success: { status: 200, body: overview },
+      send: (app: ReturnType<typeof createApp>, session: unknown) =>
+        request(app)
+          .get('/moderator/overview')
+          .query(session === undefined ? {} : { session: session as string }),
+    },
+  ] as const;
+
+  describe.each(relays)('$name', ({ method, upstreamPath, success, send }) => {
+    it('forwards the path, method and Authorization header, sends no body, and passes the response through', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(success.status, success.body)));
+
+      const response = await send(createApp(testConfig, { fetch: fetchMock }), VALID_SESSION).set(
+        'Authorization',
+        MODERATOR_AUTH,
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [calledUrl, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect((calledUrl as URL).href).toBe(`http://game-server.test/sessions/${VALID_SESSION}/${upstreamPath}`);
+      expect(init?.method).toBe(method);
+      expect(init?.headers).toEqual({ authorization: MODERATOR_AUTH });
+      expect(init?.body).toBeUndefined();
+
+      expect(response.status).toBe(success.status);
+      expect(response.headers['content-type']).toContain('application/json');
+      expect(response.body).toEqual(success.body);
+    });
+
+    it('forwards a missing Authorization header as missing, and passes the 401 back', async () => {
+      const unauthorised = { detail: 'moderator code required', code: 'moderator_unauthorised' };
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(401, unauthorised)));
+
+      const response = await send(createApp(testConfig, { fetch: fetchMock }), VALID_SESSION);
+
+      const [, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect(init?.headers).toEqual({});
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual(unauthorised);
+    });
+
+    it('passes back a 404 for an unknown session unchanged', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(404, { detail: 'not found' })));
+
+      const response = await send(createApp(testConfig, { fetch: fetchMock }), VALID_SESSION).set(
+        'Authorization',
+        MODERATOR_AUTH,
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({ detail: 'not found' });
+    });
+
+    it.each([
+      ['missing', undefined],
+      ['not a UUID', 'not-a-uuid'],
+    ])('rejects a session that is %s with 400, and sends nothing upstream', async (_label, session) => {
+      const fetchMock: typeof fetch = vi.fn();
+
+      const response = await send(createApp(testConfig, { fetch: fetchMock }), session).set(
+        'Authorization',
+        MODERATOR_AUTH,
+      );
+
+      expect(response.status).toBe(400);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('returns 502 when the game server cannot be reached', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED')));
+
+      const response = await send(createApp(testConfig, { fetch: fetchMock }), VALID_SESSION);
+
+      expect(response.status).toBe(502);
+      expect((response.body as ErrorBody).error).toContain('connect ECONNREFUSED');
+    });
+
+    it('returns 504 when the game server does not respond within the configured timeout', async () => {
+      const fetchMock: typeof fetch = vi.fn((_input, init?: FetchInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        }),
+      );
+
+      const response = await send(
+        createApp({ ...testConfig, gameServerTimeoutMs: 30 }, { fetch: fetchMock }),
+        VALID_SESSION,
+      );
+
+      expect(response.status).toBe(504);
+    });
+  });
+
+  it.each([
+    ['POST /moderator/start', 0, { detail: 'session has been stopped', code: 'session_stopped' }],
+    ['POST /moderator/stop', 1, { detail: 'session has not started', code: 'session_not_started' }],
+  ])('%s passes a 409 with its code through unchanged', async (_name, index, body) => {
+    const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(409, body)));
+
+    const response = await relays[index]!.send(createApp(testConfig, { fetch: fetchMock }), VALID_SESSION).set(
+      'Authorization',
+      MODERATOR_AUTH,
+    );
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual(body);
+  });
+});
+
+describe('game loop relays pass new fields through unchanged', () => {
+  it('passes the new `session` and `score` fields in a /state body', async () => {
+    const state = {
+      status: 'playing',
+      team: 'Red Foxes',
+      session: { phase: 'running', 'server-time': '2026-10-03T09:02:11Z' },
+      score: { points: 7, 'in-review': 0, place: null },
+      progress: { completed: 1, total: 3 },
+      current: null,
+    };
+    const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(200, state)));
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock })).get(
+      `/state?session=${VALID_SESSION}&participant=${VALID_PARTICIPANT}`,
+    );
+
+    expect(response.body).toEqual(state);
+  });
+
+  it.each([
+    [
+      'POST /join',
+      (app: ReturnType<typeof createApp>) => request(app).post('/join').send({ code: 'FOX-7Q2K', consent: true }),
+    ],
+    [
+      'POST /arrive',
+      (app: ReturnType<typeof createApp>) =>
+        request(app).post('/arrive').send({ session: VALID_SESSION, participant: VALID_PARTICIPANT, checkpoint: 2 }),
+    ],
+    [
+      'GET /state',
+      (app: ReturnType<typeof createApp>) =>
+        request(app).get(`/state?session=${VALID_SESSION}&participant=${VALID_PARTICIPANT}`),
+    ],
+  ])('%s passes `code` in an error body through unchanged', async (_name, send) => {
+    const body = { detail: 'session has not started', code: 'session_not_started' };
+    const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(409, body)));
+
+    const response = await send(createApp(testConfig, { fetch: fetchMock }));
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual(body);
   });
 });
 
