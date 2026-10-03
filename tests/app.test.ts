@@ -159,6 +159,16 @@ describe('GET /challenge.js', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers['content-type']).toMatch(/javascript/);
+    expect(response.text).toContain("from './camera.js'");
+  });
+});
+
+describe('GET /camera.js', () => {
+  it('serves the shared camera code', async () => {
+    const response = await request(createApp(testConfig)).get('/camera.js');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toMatch(/javascript/);
     expect(response.text).toContain('getUserMedia');
   });
 });

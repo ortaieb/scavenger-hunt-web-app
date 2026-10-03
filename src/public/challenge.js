@@ -1,26 +1,25 @@
-// In-app camera capture + geolocation for the /challenge page.
-//
-// The camera stream is rendered directly in the page via getUserMedia and a
-// <video>/<canvas> pair, rather than a native `<input type="file" capture>`
-// picker — that keeps the capture entirely in-app and never offers a photo
-// gallery as an alternative source.
+// In-app camera capture + geolocation for the /challenge page. The camera
+// and location code itself is shared with /play, in camera.js.
 
 import {
   isValidUuid,
   readCheckpointFromQuery,
   describeVerdict,
   describeAccuracyHint,
-  describeProximityWarning,
   describeChallenge,
   readFacingMode,
-  buildVideoConstraints,
-  hasMultipleCameras,
 } from './challenge-logic.js';
+import {
+  checkProximity,
+  createCamera,
+  deviceHasMultipleCameras,
+  getPosition,
+  loadFacingMode,
+  storeFacingMode,
+} from './camera.js';
 
-const PROXIMITY_TIMEOUT_MS = 3000;
 const CHALLENGE_TIMEOUT_MS = 3000;
 const CHALLENGE_DEBOUNCE_MS = 500;
-const FACING_MODE_STORAGE_KEY = 'scavenger-hunt.facingMode';
 
 const statusEl = document.getElementById('status');
 const video = document.getElementById('preview');
@@ -41,16 +40,13 @@ const cameraRadios = cameraToggleEl.querySelectorAll('input[name="camera"]');
 
 const ICON_CLASS = { '✓': 'passed', '✗': 'failed', '?': 'uncertain' };
 
-let stream = null;
+const camera = createCamera(video);
 let capturedBlob = null;
 let position = null;
 
 // Front/back camera choice (see issue #31), remembered across visits so a
-// solo player taking selfies doesn't have to re-pick it every time. A
-// request id guards against a slow getUserMedia from an earlier choice
-// (e.g. quick back-and-forth toggling) landing after a newer one.
-let facingMode = readFacingMode(loadStoredFacingMode());
-let latestCameraRequestId = 0;
+// solo player taking selfies doesn't have to re-pick it every time.
+let facingMode = loadFacingMode();
 
 // The courtesy hints (accuracy + proximity) are independent, but shown
 // together in one element. A fix id guards against a slow proximity
@@ -225,38 +221,16 @@ function scheduleChallengeFetch() {
   }, CHALLENGE_DEBOUNCE_MS);
 }
 
-/** localStorage can throw (private mode, blocked storage) — treat as unset. */
-function loadStoredFacingMode() {
-  try {
-    return localStorage.getItem(FACING_MODE_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function storeFacingMode(mode) {
-  try {
-    localStorage.setItem(FACING_MODE_STORAGE_KEY, mode);
-  } catch {
-    // Not remembering the choice is fine; it still applies to this visit.
-  }
-}
-
 /**
  * Shows the front/back toggle only on devices with more than one camera.
  * Asked after a stream starts, since browsers only list cameras fully once
  * permission is granted.
  */
 async function updateCameraToggle() {
-  let devices = [];
-  try {
-    devices = await navigator.mediaDevices.enumerateDevices();
-  } catch {
-    // Can't tell — leave the toggle hidden rather than offer a no-op.
-  }
+  const multiple = await deviceHasMultipleCameras();
   // Only before taking the picture: the toggle stays hidden once a photo
   // has been captured, until Retake brings the preview back.
-  cameraToggleEl.hidden = !hasMultipleCameras(devices) || video.hidden;
+  cameraToggleEl.hidden = !multiple || video.hidden;
 }
 
 function onCameraToggleChange(event) {
@@ -266,55 +240,17 @@ function onCameraToggleChange(event) {
 }
 
 async function startCamera() {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    setStatus('Camera capture is not supported in this browser.');
-    captureBtn.disabled = true;
-    return;
-  }
-
-  const requestId = ++latestCameraRequestId;
-  // Release the current camera first: several mobile browsers (notably iOS
-  // Safari) can't open a second camera while one is still streaming.
-  stopCamera();
   captureBtn.disabled = true;
-
-  let newStream;
-  try {
-    newStream = await navigator.mediaDevices.getUserMedia({
-      video: buildVideoConstraints(facingMode),
-      audio: false,
-    });
-  } catch (err) {
-    if (requestId === latestCameraRequestId) {
-      setStatus(`Camera access failed: ${describeError(err)}`);
+  const result = await camera.start(facingMode);
+  if (!result.ok) {
+    if (!result.superseded) {
+      setStatus(result.message);
     }
     return;
   }
-
-  if (requestId !== latestCameraRequestId) {
-    // Superseded by a newer toggle while this one was opening.
-    newStream.getTracks().forEach((track) => {
-      track.stop();
-    });
-    return;
-  }
-
-  stream = newStream;
-  video.srcObject = stream;
-  // Mirror by what the device actually opened, falling back to what was
-  // asked for when the browser doesn't report it.
-  const actualFacingMode = stream.getVideoTracks()[0]?.getSettings?.().facingMode ?? facingMode;
-  video.classList.toggle('mirrored', actualFacingMode === 'user');
   captureBtn.disabled = false;
   setStatus('Point the camera and take a photo.');
   void updateCameraToggle();
-}
-
-function stopCamera() {
-  stream?.getTracks().forEach((track) => {
-    track.stop();
-  });
-  stream = null;
 }
 
 function renderLocationHints() {
@@ -324,13 +260,8 @@ function renderLocationHints() {
 }
 
 function requestLocation() {
-  if (!('geolocation' in navigator)) {
-    locationEl.textContent = 'Not supported in this browser.';
-    return;
-  }
-
   locationEl.textContent = 'Requesting location…';
-  navigator.geolocation.getCurrentPosition(
+  getPosition().then(
     (pos) => {
       position = pos;
       const { latitude, longitude, accuracy } = pos.coords;
@@ -341,22 +272,19 @@ function requestLocation() {
       proximityHintText = '';
       renderLocationHints();
 
-      void checkProximity(pos);
+      void updateProximityHint(pos);
     },
     (err) => {
-      locationEl.textContent = `Location unavailable: ${err.message}`;
+      locationEl.textContent = `Location unavailable: ${describeError(err)}`;
     },
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
   );
 }
 
 /**
- * Asks the game-server's proximity advisory (via this app's relay) whether
- * the player looks out of range, at most once per location fix. This is a
- * courtesy only: it never blocks Submit, and any failure (429, 404, network
- * error, timeout) is treated the same as "say nothing" (see issue #15).
+ * Asks the proximity advisory about this fix, at most once per fix. A
+ * courtesy only: it never blocks Submit (see issue #15).
  */
-async function checkProximity(pos) {
+async function updateProximityHint(pos) {
   const identity = getIdentity();
   if (!identity) {
     // Advisory only — if the player has typed something invalid into an
@@ -365,37 +293,7 @@ async function checkProximity(pos) {
   }
 
   const fixId = ++latestFixId;
-  let warning = '';
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), PROXIMITY_TIMEOUT_MS);
-
-    let response;
-    try {
-      response = await fetch('/checkpoint/proximity', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          session: identity.session,
-          participant: identity.participant,
-          checkpoint: identity.checkpoint,
-          location: { lat: pos.coords.latitude, long: pos.coords.longitude },
-        }),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    const body = await response
-      .json()
-      .catch(() => null);
-    warning = describeProximityWarning(response.status, body);
-  } catch {
-    // Network error, timeout/abort, or a malformed response — stay silent.
-    warning = '';
-  }
+  const warning = await checkProximity(identity, pos);
 
   if (fixId === latestFixId) {
     proximityHintText = warning;
@@ -403,35 +301,25 @@ async function checkProximity(pos) {
   }
 }
 
-function capturePhoto() {
-  const { videoWidth, videoHeight } = video;
-  canvas.width = videoWidth;
-  canvas.height = videoHeight;
-  canvas.getContext('2d').drawImage(video, 0, 0, videoWidth, videoHeight);
+async function capturePhoto() {
+  const blob = await camera.capture(canvas);
+  if (!blob) {
+    setStatus('Could not capture the photo. Try again.');
+    return;
+  }
 
-  canvas.toBlob(
-    (blob) => {
-      if (!blob) {
-        setStatus('Could not capture the photo. Try again.');
-        return;
-      }
+  capturedBlob = blob;
+  photo.src = URL.createObjectURL(blob);
 
-      capturedBlob = blob;
-      photo.src = URL.createObjectURL(blob);
+  video.hidden = true;
+  photo.hidden = false;
+  captureBtn.hidden = true;
+  retakeBtn.hidden = false;
+  submitBtn.hidden = false;
+  cameraToggleEl.hidden = true;
 
-      video.hidden = true;
-      photo.hidden = false;
-      captureBtn.hidden = true;
-      retakeBtn.hidden = false;
-      submitBtn.hidden = false;
-      cameraToggleEl.hidden = true;
-
-      stopCamera();
-      requestLocation();
-    },
-    'image/jpeg',
-    0.9,
-  );
+  camera.stop();
+  requestLocation();
 }
 
 function retake() {
@@ -524,7 +412,9 @@ async function submitCapture() {
   }
 }
 
-captureBtn.addEventListener('click', capturePhoto);
+captureBtn.addEventListener('click', () => {
+  void capturePhoto();
+});
 retakeBtn.addEventListener('click', retake);
 submitBtn.addEventListener('click', () => {
   void submitCapture();
