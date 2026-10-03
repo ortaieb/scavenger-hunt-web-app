@@ -8,21 +8,50 @@
     <link rel="stylesheet" href="/play.css" />
   </head>
   <body>
-    <header class="app-bar">
-      <span class="app-name">Scavenger Hunt</span>
-      <details id="menu" class="menu" hidden>
-        <summary aria-label="Menu">Menu</summary>
-        <div class="menu-panel">
-          <p id="menu-team" class="menu-team"></p>
-          <a href="/how-to-play">How to play</a>
-          <a href="/privacy">Your photos and privacy</a>
-          <button id="leave" type="button" class="button-secondary">Leave this game</button>
-          <button id="leave-confirm" type="button" class="button-danger" hidden>
-            Tap again to leave. You'll need your team code to rejoin.
-          </button>
+    <header class="top">
+      <div class="app-bar">
+        <span class="app-name">Scavenger Hunt</span>
+        <details id="menu" class="menu" hidden>
+          <summary aria-label="Menu">Menu</summary>
+          <div class="menu-panel">
+            <p id="menu-team" class="menu-team"></p>
+            <a href="/how-to-play">How to play</a>
+            <a href="/privacy">Your photos and privacy</a>
+            <button id="leave" type="button" class="button-secondary">Leave this game</button>
+            <button id="leave-confirm" type="button" class="button-danger" hidden>
+              Tap again to leave. You'll need your team code to rejoin.
+            </button>
+          </div>
+        </details>
+      </div>
+
+      <!-- Status bar (issue #41): every screen from the lobby on. -->
+      <div id="status-bar" class="status-bar" hidden>
+        <div class="status-row">
+          <span id="sb-team" class="sb-team"></span>
+          <span class="sb-progress"><span aria-hidden="true">◉</span> <span id="sb-progress"></span></span>
+          <button id="sb-points" type="button" class="sb-points" aria-haspopup="dialog" hidden></button>
+          <span id="sb-time" class="sb-time" hidden
+            ><span class="sb-time-icon" aria-hidden="true">⏱ </span><span id="sb-time-text"></span
+            ><span id="sb-time-words" class="sb-time-words" hidden></span
+          ></span>
         </div>
-      </details>
+        <div class="clue-row" role="status">
+          <button id="sb-clue" type="button" class="sb-clue" aria-expanded="false" hidden>
+            <span class="sb-clue-label">Clue:</span> <span id="sb-clue-text"></span>
+          </button>
+          <span id="sb-phase" class="sb-phase" hidden></span>
+        </div>
+      </div>
     </header>
+
+    <dialog id="points-sheet" class="sheet" aria-labelledby="points-sheet-title">
+      <h2 id="points-sheet-title">Points</h2>
+      <div id="points-sheet-lines"></div>
+      <form method="dialog">
+        <button type="submit">Close</button>
+      </form>
+    </dialog>
 
     <main class="screen-host">
       <!-- Join -->

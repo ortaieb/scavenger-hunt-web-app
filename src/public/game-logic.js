@@ -9,17 +9,32 @@
  * @typedef {{ session: SessionInfo, participant: string, team: string }} Identity
  * @typedef {{ sequence: number, position: number, clue: string, open: boolean }} CurrentCheckpoint
  * @typedef {{
+ *   phase?: string,
+ *   'planned-start'?: string,
+ *   'planned-end'?: string,
+ *   'started-at'?: string | null,
+ *   'stopped-at'?: string | null,
+ *   'server-time'?: string,
+ * }} SessionClock
+ * @typedef {{ points: number, 'in-review'?: number, final?: boolean, place?: number | null }} Score
+ * @typedef {{
  *   status: string,
  *   team?: string,
  *   progress?: { completed: number, total: number },
  *   current?: CurrentCheckpoint | null,
- *   session?: { phase?: string },
+ *   session?: SessionClock,
+ *   score?: Score,
  * }} GameState
  * @typedef {'unknown' | 'denied' | 'granted'} PermissionStatus
+ * @typedef {'code' | 'photo' | 'sending' | 'verdict'} CheckpointStep
+ * @typedef {{ step: CheckpointStep, verdict?: 'pass' | 'pending' | 'failed' }} CheckpointProgress
+ *   Where the team is within the current checkpoint, once past the clue:
+ *   a code issued, a photo taken, sending it, or a verdict back (issue #42).
  * @typedef {{
  *   identity: Identity | null,
  *   permissions: PermissionStatus,
  *   state: GameState | null,
+ *   checkpoint?: CheckpointProgress | null,
  *   offline?: boolean,
  * }} AppState
  * @typedef {'join' | 'permissions' | 'loading' | 'lobby' | 'playing' | 'finished' | 'ended'} Screen
@@ -84,15 +99,37 @@ export function instructionFor(appState) {
     case 'lobby':
       return 'Waiting for the moderator to start.';
     case 'playing':
-      return appState.state?.current?.open === false
-        ? "This checkpoint isn't open yet. Check back soon."
-        : 'Solve the clue and go there. Tap "I\'m here" when you arrive.';
+      return playingInstruction(appState);
     case 'finished':
       return 'All checkpoints done. Wait for the moderator.';
     case 'ended':
       return 'The session is over. Thanks for playing!';
   }
   return '';
+}
+
+/** @param {AppState} appState */
+function playingInstruction(appState) {
+  const checkpoint = appState.checkpoint;
+  switch (checkpoint?.step) {
+    case 'code':
+      return 'Strike the pose and take the photo.';
+    case 'photo':
+      return 'Check your photo, then send it.';
+    case 'sending':
+      return 'The referee is checking your photo.';
+    case 'verdict':
+      if (checkpoint.verdict === 'pass') {
+        return 'Checkpoint done. Tap "Next clue".';
+      }
+      if (checkpoint.verdict === 'pending') {
+        return 'A moderator will check your photo. Tap "Next clue".';
+      }
+      return 'Not quite. Read why, then tap "Try again".';
+  }
+  return appState.state?.current?.open === false
+    ? "This checkpoint isn't open yet. Check back soon."
+    : 'Solve the clue and go there. Tap "I\'m here" when you arrive.';
 }
 
 /**
@@ -241,4 +278,222 @@ export function formatPlannedTime(isoTime) {
     return '';
   }
   return new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// --- status bar (issue #41) ------------------------------------------------
+// Sticky at the top of every screen from the lobby on. Like the rest of
+// this file it only shows what the server sent: the points rules, the
+// clock and the finish are all the server's.
+
+const TEAM_NAME_MAX = 14;
+const AMBER_UNDER_MS = 15 * 60_000;
+const RED_UNDER_MS = 5 * 60_000;
+
+/** The screens that show the status bar. */
+const STATUS_BAR_SCREENS = new Set(['lobby', 'playing', 'finished', 'ended']);
+
+/**
+ * @param {Screen} screen
+ * @returns {boolean}
+ */
+export function showsStatusBar(screen) {
+  return STATUS_BAR_SCREENS.has(screen);
+}
+
+/**
+ * The team name, cut to 14 characters (the last one an ellipsis) so row one
+ * fits at 320 px.
+ *
+ * @param {unknown} team
+ * @returns {string}
+ */
+export function teamLabel(team) {
+  const name = typeof team === 'string' ? team.trim() : '';
+  return name.length > TEAM_NAME_MAX ? `${name.slice(0, TEAM_NAME_MAX - 1)}…` : name;
+}
+
+/**
+ * Checkpoints completed so far, e.g. "0 of 3", or "3 of 3 ✓" once
+ * finished. The server counts passed and in-review photos; this only shows
+ * its numbers.
+ *
+ * @param {GameState | null} state
+ * @returns {string} '' when the state has no progress
+ */
+export function progressLabel(state) {
+  const progress = state?.progress;
+  if (!progress || !Number.isInteger(progress.completed) || !Number.isInteger(progress.total)) {
+    return '';
+  }
+  const label = `${progress.completed} of ${progress.total}`;
+  return state.status === 'finished' || (progress.total > 0 && progress.completed >= progress.total)
+    ? `${label} ✓`
+    : label;
+}
+
+/**
+ * @typedef {{ text: string, inReview: boolean, final: boolean }} PointsLabel
+ */
+
+/**
+ * The team's points if the session finished now. A dot (•) while a photo
+ * is in review, which may lower them once accepted. Lowest wins.
+ *
+ * @param {Score | undefined | null} score
+ * @returns {PointsLabel | null} null when the server sent no score (an
+ *   older game-server), so the element can be hidden.
+ */
+export function pointsLabel(score) {
+  if (!score || typeof score.points !== 'number' || !Number.isFinite(score.points)) {
+    return null;
+  }
+  const inReview = (score['in-review'] ?? 0) > 0;
+  const unit = score.points === 1 ? 'pt' : 'pts';
+  return { text: `${score.points} ${unit}${inReview ? ' •' : ''}`, inReview, final: score.final === true };
+}
+
+/**
+ * 1 → "1st", 2 → "2nd", 11 → "11th", 22 → "22nd".
+ *
+ * @param {number} n
+ * @returns {string}
+ */
+export function ordinal(n) {
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) {
+    return `${n}th`;
+  }
+  const suffix = { 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] ?? 'th';
+  return `${n}${suffix}`;
+}
+
+/**
+ * What the points sheet says when the points are tapped: how scoring
+ * works, what "in review" means, and the final points and place after the
+ * finish.
+ *
+ * @param {Score | undefined | null} score
+ * @returns {{ title: string, lines: string[] }}
+ */
+export function pointsSheetFor(score) {
+  const lines = [];
+  const points = typeof score?.points === 'number' ? score.points : null;
+  const inReview = score?.['in-review'] ?? 0;
+
+  if (score?.final === true && points !== null) {
+    lines.push(
+      typeof score.place === 'number'
+        ? `Final points: ${points}. Your team came ${ordinal(score.place)}.`
+        : `Final points: ${points}.`,
+    );
+  } else if (points !== null) {
+    lines.push(`Your points if the session finished now: ${points}.`);
+  }
+
+  lines.push(
+    'Lowest wins.',
+    'At each checkpoint your team scores its place there: 1 if your photo was accepted first, 2 if second, 3 if third, and so on.',
+    'A checkpoint still to do counts N+1, where N is the number of teams playing.',
+  );
+
+  if (inReview > 0 && score?.final !== true) {
+    lines.push(
+      `• In review: ${inReview === 1 ? '1 photo is' : `${inReview} photos are`} waiting for a moderator. ` +
+        'Until then it counts N+1; once accepted it scores your place there, which lowers your points.',
+    );
+  }
+
+  return { title: score?.final === true ? 'Final points' : 'Points', lines };
+}
+
+/**
+ * @typedef {'normal' | 'amber' | 'red' | 'over' | 'lobby' | 'none'} TimeLevel
+ * @typedef {{ text: string, words: string, level: TimeLevel }} TimeLeft
+ */
+
+/**
+ * The time element: a countdown to the planned end, corrected for the
+ * phone's clock (`serverNow` = Date.now() + clockOffset). m:ss under an
+ * hour, h:mm:ss above; amber under 15 minutes and red under 5, with "min
+ * left" in words too so colour is never the only signal. Past the planned
+ * end it says "Finishing soon": reaching zero ends nothing, only the
+ * moderator's stop does. The lobby shows the planned start instead.
+ *
+ * Today's game-server has no `session` clock in `/state` yet, so the
+ * planned times fall back to the join response's `start-time`/`end-time`.
+ *
+ * @param {AppState} appState
+ * @param {number} serverNow ms since the epoch, in server time
+ * @returns {TimeLeft}
+ */
+export function timeLeftFor(appState, serverNow) {
+  const state = appState.state;
+  const clock = state?.session;
+  const planned = appState.identity?.session;
+
+  if (state?.status === 'not_started' || clock?.phase === 'scheduled') {
+    const start = formatPlannedTime(clock?.['planned-start'] ?? planned?.['start-time']);
+    return start ? { text: `Planned start ${start}`, words: '', level: 'lobby' } : none();
+  }
+  if (state?.status !== 'playing' || clock?.phase === 'stopped') {
+    return none();
+  }
+
+  const end = Date.parse(String(clock?.['planned-end'] ?? planned?.['end-time'] ?? ''));
+  if (!Number.isFinite(end) || !Number.isFinite(serverNow)) {
+    return none();
+  }
+
+  const remaining = end - serverNow;
+  if (remaining <= 0) {
+    return { text: 'Finishing soon', words: '', level: 'over' };
+  }
+
+  const text = formatCountdown(remaining);
+  if (remaining < AMBER_UNDER_MS) {
+    // Round up, so it never says "0 min left" while time remains.
+    const minutes = Math.ceil(remaining / 60_000);
+    return { text, words: `${minutes} min left`, level: remaining < RED_UNDER_MS ? 'red' : 'amber' };
+  }
+  return { text, words: '', level: 'normal' };
+}
+
+function none() {
+  return { text: '', words: '', level: 'none' };
+}
+
+/**
+ * The clue row: the current checkpoint's clue, or the phase when there's
+ * no clue. Hidden on the Clue screen itself, where the clue fills the body.
+ *
+ * @param {AppState} appState
+ * @returns {{ text: string, isClue: boolean, hidden: boolean }}
+ */
+export function clueLineFor(appState) {
+  const screen = screenFor(appState);
+  const clue = appState.state?.current?.clue;
+
+  if (screen === 'playing' && typeof clue === 'string' && clue) {
+    // The Clue screen is "playing" before a code is issued (issue #42).
+    return { text: clue, isClue: true, hidden: !appState.checkpoint };
+  }
+  const phase = {
+    lobby: 'Waiting for the moderator',
+    finished: 'All done',
+    ended: 'Session over',
+  }[screen];
+  return { text: phase ?? '', isClue: false, hidden: !phase };
+}
+
+/**
+ * Where the countdown's clock comes from: the server time in the latest
+ * state, so it re-syncs on every poll. 0 (trust the phone) when there is
+ * none.
+ *
+ * @param {GameState | null} state
+ * @param {number} receivedAt
+ * @returns {number}
+ */
+export function clockOffsetFromState(state, receivedAt) {
+  return clockOffset(state?.session?.['server-time'], receivedAt);
 }

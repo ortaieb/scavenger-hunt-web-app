@@ -1,14 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import {
   clockOffset,
+  clockOffsetFromState,
+  clueLineFor,
   formatCountdown,
   formatPlannedTime,
   identityFromJoin,
   instructionFor,
   normaliseTeamCode,
+  ordinal,
+  pointsLabel,
+  pointsSheetFor,
+  progressLabel,
   readIdentity,
   screenFor,
   screenForError,
+  showsStatusBar,
+  teamLabel,
+  timeLeftFor,
 } from '../src/public/game-logic.js';
 
 const identity = {
@@ -83,6 +92,36 @@ describe('instructionFor', () => {
       'clue shown, checkpoint open',
       { identity, permissions: 'granted', state: playing },
       'Solve the clue and go there. Tap "I\'m here" when you arrive.',
+    ],
+    [
+      'code issued',
+      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'code' } },
+      'Strike the pose and take the photo.',
+    ],
+    [
+      'photo taken',
+      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'photo' } },
+      'Check your photo, then send it.',
+    ],
+    [
+      'sending',
+      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'sending' } },
+      'The referee is checking your photo.',
+    ],
+    [
+      'verdict pass',
+      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'verdict', verdict: 'pass' } },
+      'Checkpoint done. Tap "Next clue".',
+    ],
+    [
+      'verdict pending',
+      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'verdict', verdict: 'pending' } },
+      'A moderator will check your photo. Tap "Next clue".',
+    ],
+    [
+      'verdict failed',
+      { identity, permissions: 'granted', state: playing, checkpoint: { step: 'verdict', verdict: 'failed' } },
+      'Not quite. Read why, then tap "Try again".',
     ],
     [
       'clue shown, checkpoint not open',
@@ -216,5 +255,209 @@ describe('formatPlannedTime', () => {
 
   it.each([undefined, '', 'soon'])('is empty for %j', (value) => {
     expect(formatPlannedTime(value)).toBe('');
+  });
+});
+
+describe('status bar', () => {
+  const plannedEnd = '2026-10-03T13:00:00Z';
+  const endMs = Date.parse(plannedEnd);
+  const clock = {
+    phase: 'running',
+    'planned-start': '2026-10-03T10:00:00Z',
+    'planned-end': plannedEnd,
+    'started-at': '2026-10-03T10:01:00Z',
+    'stopped-at': null,
+    'server-time': '2026-10-03T12:00:00Z',
+  };
+  const running = { ...playing, session: clock, score: { points: 7, 'in-review': 0, final: false, place: null } };
+  const app = (state: Record<string, unknown> | null, extra: Record<string, unknown> = {}) => ({
+    identity,
+    permissions: 'granted' as const,
+    state: state as never,
+    ...extra,
+  });
+
+  describe('showsStatusBar', () => {
+    it.each([
+      ['join', false],
+      ['permissions', false],
+      ['loading', false],
+      ['lobby', true],
+      ['playing', true],
+      ['finished', true],
+      ['ended', true],
+    ] as const)('%s → %s', (screen, shown) => {
+      expect(showsStatusBar(screen)).toBe(shown);
+    });
+  });
+
+  describe('teamLabel', () => {
+    it('keeps a name of up to 14 characters', () => {
+      expect(teamLabel('Red Foxes')).toBe('Red Foxes');
+      expect(teamLabel('Fourteen chars')).toBe('Fourteen chars');
+    });
+
+    it('cuts a longer name to 14 characters, ending in an ellipsis', () => {
+      const label = teamLabel('The Magnificent Seven');
+      expect(label).toBe('The Magnifice…');
+      expect(label).toHaveLength(14);
+    });
+
+    it('is empty for a missing name', () => {
+      expect(teamLabel(undefined)).toBe('');
+    });
+  });
+
+  describe('progressLabel', () => {
+    it('shows completed of total', () => {
+      expect(progressLabel({ ...playing, progress: { completed: 0, total: 3 } })).toBe('0 of 3');
+      expect(progressLabel(playing)).toBe('1 of 3');
+    });
+
+    it('adds a tick once finished', () => {
+      expect(progressLabel({ status: 'finished', progress: { completed: 3, total: 3 }, current: null })).toBe(
+        '3 of 3 ✓',
+      );
+    });
+
+    it('is empty with no progress', () => {
+      expect(progressLabel(null)).toBe('');
+      expect(progressLabel({ status: 'playing' })).toBe('');
+    });
+  });
+
+  describe('pointsLabel', () => {
+    it('shows the points', () => {
+      expect(pointsLabel({ points: 7, 'in-review': 0 })).toEqual({ text: '7 pts', inReview: false, final: false });
+      expect(pointsLabel({ points: 1 })?.text).toBe('1 pt');
+    });
+
+    it('adds a dot while a photo is in review', () => {
+      expect(pointsLabel({ points: 9, 'in-review': 1 })).toEqual({ text: '9 pts •', inReview: true, final: false });
+    });
+
+    it('is null for an older game-server with no score', () => {
+      expect(pointsLabel(undefined)).toBeNull();
+      expect(pointsLabel(null)).toBeNull();
+    });
+  });
+
+  describe('ordinal', () => {
+    it.each([
+      [1, '1st'],
+      [2, '2nd'],
+      [3, '3rd'],
+      [4, '4th'],
+      [11, '11th'],
+      [12, '12th'],
+      [13, '13th'],
+      [21, '21st'],
+      [22, '22nd'],
+      [101, '101st'],
+    ])('%i → %s', (n, expected) => {
+      expect(ordinal(n)).toBe(expected);
+    });
+  });
+
+  describe('pointsSheetFor', () => {
+    it('explains scoring with the current points', () => {
+      const sheet = pointsSheetFor({ points: 7, 'in-review': 0, final: false, place: null });
+
+      expect(sheet.title).toBe('Points');
+      expect(sheet.lines[0]).toBe('Your points if the session finished now: 7.');
+      expect(sheet.lines).toContain('Lowest wins.');
+      expect(sheet.lines.join(' ')).toContain('N+1');
+      expect(sheet.lines.join(' ')).not.toContain('In review');
+    });
+
+    it('says what in review means while a photo is in review', () => {
+      expect(pointsSheetFor({ points: 9, 'in-review': 2 }).lines.join(' ')).toContain(
+        'In review: 2 photos are waiting for a moderator.',
+      );
+    });
+
+    it('shows the final points and place after the finish', () => {
+      const sheet = pointsSheetFor({ points: 6, 'in-review': 0, final: true, place: 2 });
+
+      expect(sheet.title).toBe('Final points');
+      expect(sheet.lines[0]).toBe('Final points: 6. Your team came 2nd.');
+    });
+  });
+
+  describe('timeLeftFor', () => {
+    it.each([
+      ['h:mm:ss above an hour', 2 * 3_600_000 + 47 * 60_000 + 12_000, { text: '2:47:12', words: '', level: 'normal' }],
+      ['m:ss under an hour', 47 * 60_000 + 12_000, { text: '47:12', words: '', level: 'normal' }],
+      ['normal at exactly 15 minutes', 15 * 60_000, { text: '15:00', words: '', level: 'normal' }],
+      ['amber under 15 minutes', 14 * 60_000 + 59_000, { text: '14:59', words: '15 min left', level: 'amber' }],
+      ['amber at exactly 5 minutes', 5 * 60_000, { text: '5:00', words: '5 min left', level: 'amber' }],
+      ['red under 5 minutes', 4 * 60_000 + 10_000, { text: '4:10', words: '5 min left', level: 'red' }],
+      ['red, rounding up the last minute', 30_000, { text: '0:30', words: '1 min left', level: 'red' }],
+      ['"Finishing soon" at the planned end', 0, { text: 'Finishing soon', words: '', level: 'over' }],
+      ['"Finishing soon" past the planned end', -60_000, { text: 'Finishing soon', words: '', level: 'over' }],
+    ])('%s', (_label, remaining, expected) => {
+      expect(timeLeftFor(app(running), endMs - remaining)).toEqual(expected);
+    });
+
+    it('shows the planned start in the lobby', () => {
+      const lobby = { ...notStarted, session: { ...clock, phase: 'scheduled', 'started-at': null } };
+      const expected = `Planned start ${formatPlannedTime(clock['planned-start'])}`;
+
+      expect(timeLeftFor(app(lobby), endMs)).toEqual({ text: expected, words: '', level: 'lobby' });
+    });
+
+    it("falls back to the join response's planned times when /state has no clock", () => {
+      const end = Date.parse(identity.session['end-time']);
+
+      expect(timeLeftFor(app(playing), end - 65_000).text).toBe('1:05');
+      expect(timeLeftFor(app(notStarted), end).text).toBe(
+        `Planned start ${formatPlannedTime(identity.session['start-time'])}`,
+      );
+    });
+
+    it.each([
+      ['finished', { ...running, status: 'finished', current: null }],
+      ['ended', { ...running, status: 'ended', current: null }],
+      ['stopped', { ...running, session: { ...clock, phase: 'stopped' } }],
+    ])('shows nothing once %s', (_label, state) => {
+      expect(timeLeftFor(app(state), endMs - 60_000).level).toBe('none');
+    });
+  });
+
+  describe('clockOffsetFromState', () => {
+    it("re-syncs from the state's server time", () => {
+      const receivedAt = Date.parse('2026-10-03T11:59:58Z');
+      expect(clockOffsetFromState(running, receivedAt)).toBe(2_000);
+    });
+
+    it('trusts the phone when there is no server time', () => {
+      expect(clockOffsetFromState(playing, Date.now())).toBe(0);
+    });
+  });
+
+  describe('clueLineFor', () => {
+    it('is hidden on the Clue screen, where the clue fills the body', () => {
+      expect(clueLineFor(app(running))).toEqual({ text: playing.current.clue, isClue: true, hidden: true });
+    });
+
+    it('shows the clue once past the Clue screen', () => {
+      expect(clueLineFor(app(running, { checkpoint: { step: 'code' } }))).toEqual({
+        text: playing.current.clue,
+        isClue: true,
+        hidden: false,
+      });
+    });
+
+    it.each([
+      ['lobby', notStarted, 'Waiting for the moderator'],
+      ['finished', { ...running, status: 'finished', current: null }, 'All done'],
+      ['session over', { ...running, status: 'ended', current: null }, 'Session over'],
+    ])('shows the phase in the %s', (_label, state, text) => {
+      expect(clueLineFor(app(state))).toEqual({ text, isClue: false, hidden: false });
+    });
+
+    it('is hidden before the lobby', () => {
+      expect(clueLineFor({ identity: null, permissions: 'unknown', state: null }).hidden).toBe(true);
+    });
   });
 });

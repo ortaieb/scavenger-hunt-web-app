@@ -8,23 +8,33 @@
 
 import * as api from './api.js';
 import {
+  clockOffsetFromState,
+  clueLineFor,
   formatPlannedTime,
   identityFromJoin,
   instructionFor,
   normaliseTeamCode,
+  pointsLabel,
+  pointsSheetFor,
+  progressLabel,
   readIdentity,
   screenFor,
   screenForError,
+  showsStatusBar,
+  teamLabel,
+  timeLeftFor,
 } from './game-logic.js';
 
 const IDENTITY_STORAGE_KEY = 'scavenger-hunt.identity';
 const PERMISSIONS_STORAGE_KEY = 'scavenger-hunt.permissionsGranted';
 const LOBBY_POLL_MS = 10000;
 const LOCATION_TIMEOUT_MS = 15000;
+const COUNTDOWN_TICK_MS = 1000;
 
 const SCREENS = ['join', 'permissions', 'loading', 'lobby', 'playing', 'finished', 'ended'];
-// Screens that wait on the moderator, so keep asking the server.
-const POLLING_SCREENS = new Set(['loading', 'lobby']);
+// Screens that wait on the server, so keep asking it: the lobby for the
+// start, and the clue so the countdown re-syncs and a stop is noticed.
+const POLLING_SCREENS = new Set(['loading', 'lobby', 'playing']);
 
 const el = (id) => document.getElementById(id);
 
@@ -42,6 +52,19 @@ const permissionsAskEl = el('permissions-ask');
 const permissionsDeniedEl = el('permissions-denied');
 const permissionsDeniedWhatEl = el('permissions-denied-what');
 const connectionEl = el('connection');
+const statusBarEl = el('status-bar');
+const sbTeamEl = el('sb-team');
+const sbProgressEl = el('sb-progress');
+const sbPointsBtn = el('sb-points');
+const sbTimeEl = el('sb-time');
+const sbTimeTextEl = el('sb-time-text');
+const sbTimeWordsEl = el('sb-time-words');
+const sbClueBtn = el('sb-clue');
+const sbClueTextEl = el('sb-clue-text');
+const sbPhaseEl = el('sb-phase');
+const pointsSheetEl = el('points-sheet');
+const pointsSheetTitleEl = el('points-sheet-title');
+const pointsSheetLinesEl = el('points-sheet-lines');
 
 /** @type {import('./game-logic.js').AppState} */
 const appState = {
@@ -53,6 +76,11 @@ const appState = {
 
 let pollTimer = null;
 let latestStateRequestId = 0;
+
+// Server time minus the phone's time, re-synced on every state response, so
+// the countdown follows the server's clock rather than the phone's.
+let clockOffsetMs = 0;
+let countdownTimer = null;
 
 // --- storage ---------------------------------------------------------------
 // Private browsing can make localStorage throw, or come back empty: the page
@@ -101,6 +129,7 @@ function render() {
   connectionEl.hidden = !appState.offline || screen === 'join';
   connectionEl.textContent = appState.offline ? instruction : '';
 
+  renderStatusBar(screen);
   if (screen === 'permissions') {
     renderPermissions();
   }
@@ -113,6 +142,95 @@ function render() {
 
   schedulePolling(screen);
 }
+
+function renderStatusBar(screen) {
+  const shown = showsStatusBar(screen);
+  statusBarEl.hidden = !shown;
+  if (!shown) {
+    stopCountdown();
+    return;
+  }
+
+  const state = appState.state;
+  sbTeamEl.textContent = teamLabel(state?.team ?? appState.identity?.team);
+  sbTeamEl.title = state?.team ?? appState.identity?.team ?? '';
+  const progress = progressLabel(state);
+  sbProgressEl.textContent = progress;
+  sbProgressEl.parentElement.hidden = !progress;
+  sbProgressEl.parentElement.setAttribute('aria-label', progress ? `Checkpoints: ${progress}` : '');
+
+  const points = pointsLabel(state?.score);
+  sbPointsBtn.hidden = !points;
+  if (points) {
+    sbPointsBtn.textContent = points.text;
+    sbPointsBtn.setAttribute(
+      'aria-label',
+      `${points.final ? 'Final points' : 'Points'}: ${points.text.replace(' •', '')}` +
+        `${points.inReview ? ', a photo is in review' : ''}. Lowest wins. Tap for how scoring works.`,
+    );
+  }
+
+  const clueLine = clueLineFor(appState);
+  if (clueLine.isClue) {
+    if (sbClueTextEl.textContent !== clueLine.text) {
+      // A new clue starts collapsed to one line.
+      sbClueBtn.setAttribute('aria-expanded', 'false');
+    }
+    sbClueTextEl.textContent = clueLine.text;
+  }
+  sbClueBtn.hidden = clueLine.hidden || !clueLine.isClue;
+  sbPhaseEl.textContent = clueLine.isClue ? '' : clueLine.text;
+  sbPhaseEl.hidden = clueLine.hidden || clueLine.isClue;
+
+  renderTimeLeft();
+  startCountdown();
+}
+
+function renderTimeLeft() {
+  const time = timeLeftFor(appState, Date.now() + clockOffsetMs);
+  sbTimeEl.hidden = time.level === 'none';
+  sbTimeEl.className = `sb-time sb-time--${time.level}`;
+  sbTimeTextEl.textContent = time.text;
+  sbTimeWordsEl.textContent = time.words;
+  sbTimeWordsEl.hidden = !time.words;
+  sbTimeEl.setAttribute(
+    'aria-label',
+    time.level === 'normal' || time.level === 'amber' || time.level === 'red'
+      ? `Time left: ${time.text}${time.words ? `, ${time.words}` : ''}`
+      : time.text,
+  );
+}
+
+// Ticks every second while the status bar shows; reaching zero ends
+// nothing (only the moderator's stop does, and the next poll picks it up).
+function startCountdown() {
+  if (countdownTimer === null && document.visibilityState === 'visible') {
+    countdownTimer = setInterval(renderTimeLeft, COUNTDOWN_TICK_MS);
+  }
+}
+
+function stopCountdown() {
+  clearInterval(countdownTimer);
+  countdownTimer = null;
+}
+
+sbClueBtn.addEventListener('click', () => {
+  const expanded = sbClueBtn.getAttribute('aria-expanded') === 'true';
+  sbClueBtn.setAttribute('aria-expanded', String(!expanded));
+});
+
+sbPointsBtn.addEventListener('click', () => {
+  const sheet = pointsSheetFor(appState.state?.score);
+  pointsSheetTitleEl.textContent = sheet.title;
+  pointsSheetLinesEl.replaceChildren(
+    ...sheet.lines.map((line) => {
+      const p = document.createElement('p');
+      p.textContent = line;
+      return p;
+    }),
+  );
+  pointsSheetEl.showModal();
+});
 
 function renderPermissions() {
   const denied = appState.permissions === 'denied';
@@ -271,7 +389,7 @@ async function refreshState() {
   }
 
   const requestId = ++latestStateRequestId;
-  const { status, body } = await api.fetchState(identity.session.id, identity.participant);
+  const { status, body, receivedAt } = await api.fetchState(identity.session.id, identity.participant);
   // Ignore a slow answer that a newer request (or Leave) has overtaken.
   if (requestId !== latestStateRequestId || appState.identity !== identity) {
     return;
@@ -280,6 +398,7 @@ async function refreshState() {
   if (status === 200 && body && typeof body === 'object') {
     appState.state = /** @type {import('./game-logic.js').GameState} */ (body);
     appState.offline = false;
+    clockOffsetMs = clockOffsetFromState(appState.state, receivedAt);
     render();
     return;
   }
@@ -316,9 +435,10 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     void refreshState();
   } else {
-    // Stop polling while hidden; it restarts on return.
+    // Stop polling and the countdown while hidden; both restart on return.
     clearTimeout(pollTimer);
     pollTimer = null;
+    stopCountdown();
   }
 });
 

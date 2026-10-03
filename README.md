@@ -33,7 +33,20 @@ on the right screen.
 | Join | No stored identity: team code (upper-cased as typed), the photo privacy summary, an **unticked** consent box, links to the privacy notice and "How to play" |
 | Permissions | After join, until camera and location have been granted once: explains why, then asks for the camera, then location, on one tap; if refused, steps for iPhone Safari and Android Chrome, then Try again |
 | Lobby | `status: not_started`: team, session name, area and planned start; polls `GET /state` every 10 s (at once when the page becomes visible again, never while hidden) |
-| Clue, Finished, Session over | Placeholders until issues #42 and #43 |
+| Clue, Finished, Session over | Placeholders until issues #42 and #43; the clue placeholder also polls every 10 s |
+
+From the lobby on, a sticky **status bar** (issue #41) shows the team (cut at
+14 characters), checkpoints completed ("1 of 3", "3 of 3 ✓" when finished),
+points (tap for how scoring works; a • while a photo is in review), the time
+to the planned end and the current clue (tap to read it all), or the phase
+when there's no clue. The countdown is m:ss under an hour and h:mm:ss above,
+amber under 15 minutes and red under 5 with "min left" in words too, and
+"Finishing soon" past the planned end: reaching zero ends nothing, only the
+moderator's stop does. It follows the server's clock (`server-time` minus
+the phone's time on arrival, re-synced on every poll). The lobby shows the
+planned start instead. Until the game-server's `/state` carries `session`
+and `score`, the planned times come from the join response and the points
+are hidden.
 
 Join stays disabled until the box is ticked, so `consent: true` is only
 ever the player's own tick. The join response's `{session, participant,

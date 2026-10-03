@@ -53,17 +53,167 @@ a {
   text-underline-offset: 0.15em;
 }
 
-.app-bar {
+.top {
   position: sticky;
   top: 0;
   z-index: 2;
+  padding: var(--safe-top) calc(0.75rem + var(--safe-right)) 0 calc(0.75rem + var(--safe-left));
+  background: var(--bg);
+  border-bottom: 1px solid var(--surface);
+}
+
+.app-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: calc(0.5rem + var(--safe-top)) calc(1rem + var(--safe-right)) 0.5rem calc(1rem + var(--safe-left));
-  background: var(--bg);
-  border-bottom: 1px solid var(--surface);
+  padding: 0.5rem 0;
+}
+
+/* Status bar (issue #41). Row one has to fit on one line at 320 px with a
+   14-character team name and h:mm:ss, so it's a notch smaller than body
+   text and uses tabular figures. When the time needs more room (the amber
+   and red words, "Planned start", "Finishing soon"), it wraps under the
+   row rather than being cut. */
+.status-bar {
+  padding: 0 0 0.5rem;
+}
+
+.status-bar[hidden] {
+  display: none;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.3rem;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sb-team {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.sb-progress,
+.sb-time {
+  flex: none;
+}
+
+.sb-time {
+  margin-left: auto;
+  border-radius: 0.35rem;
+}
+
+.sb-time[hidden],
+.sb-points[hidden],
+.sb-clue[hidden],
+.sb-phase[hidden],
+.sb-time-words[hidden] {
+  display: none;
+}
+
+/* Thresholds are in words too ("12 min left"), never colour alone. */
+.sb-time--amber,
+.sb-time--red {
+  padding: 0.1rem 0.35rem;
+}
+
+.sb-time--amber {
+  background: #facc15;
+  color: #111318;
+  font-weight: 700;
+}
+
+.sb-time--red {
+  background: #dc2626;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+/* The badge and its words carry the urgency; the icon would only take
+   room. */
+.sb-time--amber .sb-time-icon,
+.sb-time--red .sb-time-icon {
+  display: none;
+}
+
+.sb-time-words::before {
+  content: ' · ';
+}
+
+.sb-points {
+  flex: none;
+  width: auto;
+  min-height: 44px;
+  margin: -0.5rem 0;
+  padding: 0;
+  border-radius: 0.35rem;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline dotted;
+  text-underline-offset: 0.2em;
+}
+
+.clue-row {
+  margin-top: 0.35rem;
+  font-size: 0.95rem;
+}
+
+.sb-clue {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.35rem 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sb-clue[aria-expanded='true'] {
+  white-space: normal;
+}
+
+.sb-clue-label {
+  font-weight: 700;
+}
+
+.sb-phase {
+  display: block;
+  padding: 0.35rem 0;
+  color: var(--muted);
+}
+
+.sheet {
+  width: min(32rem, calc(100vw - 2rem));
+  margin: auto auto calc(1rem + var(--safe-bottom));
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.sheet::backdrop {
+  background: rgb(0 0 0 / 0.6);
+}
+
+.sheet h2 {
+  margin-top: 0;
 }
 
 .app-name {
