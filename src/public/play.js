@@ -1,19 +1,30 @@
 // DOM wiring for the participant app at /play (issue #40). Everything the
 // page decides lives in game-logic.js; this file only reads and writes the
-// DOM, storage and the browser's permission prompts, and polls /state.
+// DOM, storage, the camera and the browser's permission prompts, and polls
+// /state.
 //
 // The screen is always recomputed from what's stored (the team's identity,
 // whether permissions were granted once) and the latest GET /state, so a
 // reload, a locked screen or lost signal always lands back on the right one.
 
 import * as api from './api.js';
+import { checkProximity, createCamera, deviceHasMultipleCameras, getPosition, loadFacingMode, storeFacingMode } from './camera.js';
+import { describeAccuracyHint } from './challenge-logic.js';
 import {
+  checkpointAfterArrive,
+  checkpointAfterPhoto,
+  checkpointAfterRetake,
+  checkpointAfterVerdict,
+  checkpointSending,
   clockOffsetFromState,
+  codeExpired,
+  codeTimeLeft,
   clueLineFor,
   formatPlannedTime,
   identityFromJoin,
   instructionFor,
   normaliseTeamCode,
+  pollIntervalFor,
   pointsLabel,
   pointsSheetFor,
   progressLabel,
@@ -23,18 +34,29 @@ import {
   showsStatusBar,
   teamLabel,
   timeLeftFor,
+  verdictHeading,
 } from './game-logic.js';
 
 const IDENTITY_STORAGE_KEY = 'scavenger-hunt.identity';
 const PERMISSIONS_STORAGE_KEY = 'scavenger-hunt.permissionsGranted';
-const LOBBY_POLL_MS = 10000;
+const OFFLINE_RETRY_MS = 10000;
 const LOCATION_TIMEOUT_MS = 15000;
 const COUNTDOWN_TICK_MS = 1000;
 
-const SCREENS = ['join', 'permissions', 'loading', 'lobby', 'playing', 'finished', 'ended'];
-// Screens that wait on the server, so keep asking it: the lobby for the
-// start, and the clue so the countdown re-syncs and a stop is noticed.
-const POLLING_SCREENS = new Set(['loading', 'lobby', 'playing']);
+const SCREENS = [
+  'join',
+  'permissions',
+  'loading',
+  'lobby',
+  'clue',
+  'capture',
+  'review',
+  'checking',
+  'verdict',
+  'finished',
+  'ended',
+];
+const CHECK_CLASS = { '✓': 'passed', '✗': 'failed', '?': 'uncertain' };
 
 const el = (id) => document.getElementById(id);
 
@@ -71,6 +93,7 @@ const appState = {
   identity: readIdentity(loadStored(IDENTITY_STORAGE_KEY)),
   permissions: loadStored(PERMISSIONS_STORAGE_KEY) === true ? 'granted' : 'unknown',
   state: null,
+  checkpoint: null,
   offline: false,
 };
 
@@ -136,9 +159,19 @@ function render() {
   if (screen === 'lobby') {
     renderLobby();
   }
-  if (screen === 'playing') {
-    el('playing-clue').textContent = appState.state?.current?.clue ?? '';
+  if (screen === 'clue') {
+    renderClue();
   }
+  if (screen === 'capture') {
+    renderCapture();
+  }
+  if (screen === 'review') {
+    renderReview();
+  }
+  if (screen === 'verdict') {
+    renderVerdict();
+  }
+  syncCamera(screen);
 
   schedulePolling(screen);
 }
@@ -205,8 +238,13 @@ function renderTimeLeft() {
 // nothing (only the moderator's stop does, and the next poll picks it up).
 function startCountdown() {
   if (countdownTimer === null && document.visibilityState === 'visible') {
-    countdownTimer = setInterval(renderTimeLeft, COUNTDOWN_TICK_MS);
+    countdownTimer = setInterval(tick, COUNTDOWN_TICK_MS);
   }
+}
+
+function tick() {
+  renderTimeLeft();
+  renderCodeTimeLeft();
 }
 
 function stopCountdown() {
@@ -426,30 +464,399 @@ function schedulePolling(screen) {
     return;
   }
   // Keep retrying when offline, whatever the screen, so it recovers.
-  if (POLLING_SCREENS.has(screen) || appState.offline) {
-    pollTimer = setTimeout(() => void refreshState(), LOBBY_POLL_MS);
+  const interval = appState.offline ? OFFLINE_RETRY_MS : pollIntervalFor(screen);
+  if (interval > 0) {
+    pollTimer = setTimeout(() => void refreshState(), interval);
   }
 }
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
+    // Restarts the camera (if on Capture) and the countdown straight away.
+    render();
     void refreshState();
   } else {
-    // Stop polling and the countdown while hidden; both restart on return.
+    // Stop polling, the countdown and the camera while hidden; all restart
+    // on return (iOS releases the camera anyway).
     clearTimeout(pollTimer);
     pollTimer = null;
     stopCountdown();
+    camera.stop();
   }
 });
 
 window.addEventListener('online', () => void refreshState());
+
+// --- playing a checkpoint (issue #42) --------------------------------------
+// Clue → (I'm here) → Capture → (Take photo) → Review → (Send) → Checking →
+// Verdict → (Next clue | Try again). Progress within a checkpoint lives in
+// memory only: after a reload the team is back on the Clue, and "I'm here"
+// issues a fresh code.
+
+const camera = createCamera(el('preview'));
+const snapshotCanvas = el('snapshot');
+const arriveBtn = el('arrive-button');
+const captureBtn = el('capture-button');
+const cameraSwitchBtn = el('camera-switch');
+const retakeBtn = el('retake-button');
+const sendBtn = el('send-button');
+const verdictBtn = el('verdict-button');
+
+let facingMode = loadFacingMode();
+let cameraStarting = false;
+/** @type {Blob | null} */
+let photoBlob = null;
+let photoUrl = '';
+/** @type {GeolocationPosition | null} */
+let photoPosition = null;
+let photoHint = '';
+let codeRefresh = null;
+let busy = false;
+let proximityCheckedFor = '';
+
+function showMessage(id, message) {
+  el(id).textContent = message;
+  el(id).hidden = !message;
+}
+
+function serverNow() {
+  return Date.now() + clockOffsetMs;
+}
+
+function identityFor(sequence) {
+  const identity = appState.identity;
+  return { session: identity.session.id, participant: identity.participant, checkpoint: sequence };
+}
+
+function renderClue() {
+  const current = appState.state?.current;
+  el('clue-text').textContent = current?.clue ?? '';
+  const closed = current?.open === false;
+  // Disabled, with the reason, while the checkpoint isn't open.
+  el('clue-closed').hidden = !closed;
+  arriveBtn.disabled = closed || busy;
+  arriveBtn.textContent = busy ? 'Checking in…' : "I'm here";
+}
+
+function renderCapture() {
+  const code = appState.checkpoint?.code;
+  el('code-value').textContent = code?.value ?? '';
+  el('pose-text').textContent = code?.pose ?? '';
+  el('pose-text').hidden = !code?.pose;
+  renderCodeTimeLeft();
+  maybeCheckProximity();
+}
+
+function renderCodeTimeLeft() {
+  const checkpoint = appState.checkpoint;
+  if (!checkpoint?.code) {
+    return;
+  }
+  el('code-time-left').textContent = codeTimeLeft(checkpoint, serverNow());
+  const screen = screenFor(appState);
+  // The code isn't checked yet, but an expired one is quietly swapped for a
+  // fresh one, keeping the photo.
+  if ((screen === 'capture' || screen === 'review') && codeExpired(checkpoint, serverNow())) {
+    void refreshCode();
+  }
+}
+
+function renderReview() {
+  el('photo-preview').src = photoUrl;
+  showMessage('review-hint', photoHint);
+  showMessage('review-error', appState.checkpoint?.message ?? '');
+  el('location-status').textContent = photoPosition
+    ? `Location recorded (±${Math.round(photoPosition.coords.accuracy)} m).`
+    : 'Getting your location…';
+  retakeBtn.disabled = busy;
+  sendBtn.disabled = busy || !photoBlob;
+  sendBtn.textContent = busy ? 'Sending…' : 'Send';
+}
+
+function renderVerdict() {
+  const checkpoint = appState.checkpoint;
+  const display = checkpoint?.display;
+  el('verdict-heading').textContent = verdictHeading(checkpoint);
+  el('verdict-message').textContent = display?.message ?? '';
+  el('verdict-checks').replaceChildren(
+    ...(display?.checklist ?? []).map((item) => {
+      const li = document.createElement('li');
+      li.className = `check--${CHECK_CLASS[item.icon] ?? 'uncertain'}`;
+      // textContent, never innerHTML: reasons are server-written.
+      li.textContent = `${item.icon} ${item.label}`;
+      if (item.reason) {
+        const reason = document.createElement('span');
+        reason.className = 'check-reason';
+        reason.textContent = item.reason;
+        li.append(reason);
+      }
+      return li;
+    }),
+  );
+  const points = pointsLabel(appState.state?.score);
+  el('verdict-points').textContent = points ? `Your points now: ${points.text}. Lowest wins.` : '';
+  el('verdict-points').hidden = !points;
+  verdictBtn.disabled = busy;
+  verdictBtn.textContent = checkpoint?.verdict === 'failed' ? (busy ? 'Getting a new code…' : 'Try again') : 'Next clue';
+}
+
+// The camera runs only on Capture, and only while the page is visible.
+function syncCamera(screen) {
+  const wanted = screen === 'capture' && document.visibilityState === 'visible';
+  if (!wanted) {
+    if (camera.active || cameraStarting) {
+      camera.stop();
+      cameraStarting = false;
+    }
+    captureBtn.disabled = true;
+    return;
+  }
+  if (!camera.active && !cameraStarting) {
+    void startCamera();
+  }
+}
+
+async function startCamera() {
+  cameraStarting = true;
+  captureBtn.disabled = true;
+  showMessage('capture-problem', '');
+  const result = await camera.start(facingMode);
+  cameraStarting = false;
+  if (!result.ok) {
+    if (!result.superseded) {
+      showMessage('capture-problem', result.message);
+    }
+    return;
+  }
+  captureBtn.disabled = false;
+  cameraSwitchBtn.hidden = !(await deviceHasMultipleCameras());
+}
+
+cameraSwitchBtn.addEventListener('click', () => {
+  facingMode = facingMode === 'user' ? 'environment' : 'user';
+  storeFacingMode(facingMode);
+  void startCamera();
+});
+
+// The advisory "you may be outside the area" note: once per code, never
+// blocking anything.
+function maybeCheckProximity() {
+  const checkpoint = appState.checkpoint;
+  const key = `${checkpoint?.sequence}:${checkpoint?.code?.value}`;
+  if (!checkpoint?.sequence || proximityCheckedFor === key) {
+    return;
+  }
+  proximityCheckedFor = key;
+  showMessage('proximity-note', '');
+  getPosition()
+    .then((position) => checkProximity(identityFor(checkpoint.sequence), position))
+    .then(
+      (warning) => {
+        if (proximityCheckedFor === key) {
+          showMessage('proximity-note', warning);
+        }
+      },
+      () => {
+        // No fix yet: say nothing; the photo's own fix is taken on Review.
+      },
+    );
+}
+
+async function arriveAt(sequence) {
+  const identity = identityFor(sequence);
+  const result = await api.arrive(identity.session, identity.participant, sequence);
+  return checkpointAfterArrive(appState.checkpoint, sequence, result.status, result.body);
+}
+
+async function applyArriveError(error, messageId) {
+  if (error.forgetIdentity) {
+    forgetIdentity();
+    showJoinError(error.message);
+    render();
+    return;
+  }
+  showMessage(messageId, error.message);
+  // Let the server say where the team really stands.
+  await refreshState();
+}
+
+arriveBtn.addEventListener('click', async () => {
+  const sequence = appState.state?.current?.sequence;
+  if (busy || typeof sequence !== 'number') {
+    return;
+  }
+  busy = true;
+  showMessage('clue-error', '');
+  render();
+  const { checkpoint, error } = await arriveAt(sequence);
+  busy = false;
+  if (error) {
+    render();
+    await applyArriveError(error, 'clue-error');
+    return;
+  }
+  appState.checkpoint = checkpoint;
+  render();
+});
+
+/** Swaps an expired code for a fresh one, staying on the same screen. */
+function refreshCode() {
+  const sequence = appState.checkpoint?.sequence;
+  if (codeRefresh || typeof sequence !== 'number') {
+    return codeRefresh ?? Promise.resolve();
+  }
+  codeRefresh = arriveAt(sequence)
+    .then(({ checkpoint, error }) => {
+      if (!error && appState.checkpoint?.sequence === sequence) {
+        // Keep what's in memory (the photo, a message); only the code changes.
+        appState.checkpoint = { ...appState.checkpoint, code: checkpoint.code };
+        render();
+      }
+    })
+    .finally(() => {
+      codeRefresh = null;
+    });
+  return codeRefresh;
+}
+
+captureBtn.addEventListener('click', async () => {
+  const checkpoint = appState.checkpoint;
+  if (!checkpoint || !camera.active) {
+    return;
+  }
+  const blob = await camera.capture(snapshotCanvas);
+  if (!blob) {
+    showMessage('capture-problem', 'The camera isn\'t ready yet. Wait a moment, then tap Take photo again.');
+    return;
+  }
+  clearPhoto();
+  photoBlob = blob;
+  photoUrl = URL.createObjectURL(blob);
+  appState.checkpoint = checkpointAfterPhoto(checkpoint);
+  render();
+  void locatePhoto();
+});
+
+/** The fix sent with the photo, taken when the photo is. */
+async function locatePhoto() {
+  const blob = photoBlob;
+  try {
+    const position = await getPosition();
+    if (photoBlob !== blob) {
+      return;
+    }
+    photoPosition = position;
+    const hints = [describeAccuracyHint(position.coords.accuracy)];
+    const sequence = appState.checkpoint?.sequence;
+    if (typeof sequence === 'number') {
+      hints.push(await checkProximity(identityFor(sequence), position));
+    }
+    if (photoBlob === blob) {
+      photoHint = hints.filter(Boolean).join('\n');
+    }
+  } catch (err) {
+    if (photoBlob === blob) {
+      photoHint = `Location unavailable: ${err instanceof Error ? err.message : String(err)}. Tap Send to try again.`;
+    }
+  }
+  if (screenFor(appState) === 'review') {
+    render();
+  }
+}
+
+function clearPhoto() {
+  if (photoUrl) {
+    URL.revokeObjectURL(photoUrl);
+  }
+  photoBlob = null;
+  photoUrl = '';
+  photoPosition = null;
+  photoHint = '';
+}
+
+retakeBtn.addEventListener('click', () => {
+  if (busy || !appState.checkpoint) {
+    return;
+  }
+  clearPhoto();
+  appState.checkpoint = checkpointAfterRetake(appState.checkpoint);
+  render();
+});
+
+sendBtn.addEventListener('click', async () => {
+  const checkpoint = appState.checkpoint;
+  if (busy || !checkpoint || !photoBlob || typeof checkpoint.sequence !== 'number') {
+    return;
+  }
+  busy = true;
+  render();
+
+  // Location is needed upstream; get it now if it wasn't ready.
+  if (!photoPosition) {
+    await locatePhoto();
+  }
+  // An expired code is swapped quietly first; the photo is kept.
+  if (codeExpired(appState.checkpoint, serverNow())) {
+    await refreshCode();
+  }
+  busy = false;
+  if (!photoPosition || !photoBlob) {
+    render();
+    return;
+  }
+
+  appState.checkpoint = checkpointSending(appState.checkpoint);
+  render();
+
+  const identity = identityFor(checkpoint.sequence);
+  const result = await api.sendPhoto({ ...identity, image: photoBlob, position: photoPosition });
+  appState.checkpoint = checkpointAfterVerdict(appState.checkpoint, result.status, result.text);
+  if (appState.checkpoint.step === 'verdict') {
+    clearPhoto();
+  }
+  render();
+  // The new points total and progress.
+  void refreshState();
+});
+
+verdictBtn.addEventListener('click', async () => {
+  const checkpoint = appState.checkpoint;
+  if (busy || !checkpoint) {
+    return;
+  }
+  if (checkpoint.verdict !== 'failed') {
+    // Next clue.
+    appState.checkpoint = null;
+    render();
+    void refreshState();
+    return;
+  }
+
+  // Try again: the failed photo used up the code, so arrive again for a
+  // fresh one, back on Capture.
+  busy = true;
+  render();
+  const sequence = checkpoint.sequence;
+  const { checkpoint: next, error } = await arriveAt(sequence);
+  busy = false;
+  if (error) {
+    appState.checkpoint = null;
+    render();
+    await applyArriveError(error, 'clue-error');
+    return;
+  }
+  appState.checkpoint = next;
+  render();
+});
 
 // --- leave -----------------------------------------------------------------
 
 function forgetIdentity() {
   appState.identity = null;
   appState.state = null;
+  appState.checkpoint = null;
   appState.offline = false;
+  clearPhoto();
   latestStateRequestId++;
   store(IDENTITY_STORAGE_KEY, null);
 }

@@ -108,10 +108,15 @@ export function createCamera(video) {
    * mirrored front-camera preview never produces a mirrored photo.
    *
    * @param {HTMLCanvasElement} canvas
-   * @returns {Promise<Blob | null>}
+   * @returns {Promise<Blob | null>} null when there's no frame to take
    */
   function capture(canvas) {
     const { videoWidth, videoHeight } = video;
+    if (!stream || videoWidth === 0 || videoHeight === 0) {
+      // No frame yet (the camera is still warming up): no photo rather
+      // than a blank one.
+      return Promise.resolve(null);
+    }
     canvas.width = videoWidth;
     canvas.height = videoHeight;
     canvas.getContext('2d').drawImage(video, 0, 0, videoWidth, videoHeight);

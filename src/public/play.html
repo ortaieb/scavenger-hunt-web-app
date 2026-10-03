@@ -175,13 +175,90 @@
         </p>
       </section>
 
-      <!-- Placeholders until #42 and #43 -->
-      <section id="screen-playing" class="screen" hidden>
+      <!-- Clue -->
+      <section id="screen-clue" class="screen" hidden>
         <h1>Clue</h1>
         <p class="instruction" data-instruction></p>
-        <p id="playing-clue" class="clue"></p>
-        <p class="note">Checking in at a checkpoint is coming soon.</p>
+        <div class="screen-body">
+          <p id="clue-text" class="clue"></p>
+          <p id="clue-error" class="message message--error" role="alert" hidden></p>
+          <div class="primary-action">
+            <p id="clue-closed" class="action-reason" hidden>This checkpoint isn't open yet.</p>
+            <button id="arrive-button" type="button">I'm here</button>
+          </div>
+        </div>
       </section>
+
+      <!-- Capture -->
+      <section id="screen-capture" class="screen" hidden>
+        <h1>Take your photo</h1>
+        <p class="instruction" data-instruction></p>
+        <div class="screen-body">
+          <div class="code-card">
+            <div class="code-head">
+              <span>Your code</span>
+              <span id="code-time-left" class="code-time-left"></span>
+            </div>
+            <p id="code-value" class="code-value" aria-label="Your code"></p>
+            <p class="code-note">Issued, not checked by the referee yet: you don't need it in the photo.</p>
+          </div>
+          <p id="pose-text" class="pose" hidden></p>
+          <div class="camera-frame">
+            <video id="preview" autoplay playsinline muted></video>
+          </div>
+          <button id="camera-switch" type="button" class="button-secondary camera-switch" hidden>
+            ⇄ Front / back
+          </button>
+          <p id="capture-problem" class="message message--error" role="alert" hidden></p>
+          <p id="proximity-note" class="message message--note" role="status" hidden></p>
+          <div class="primary-action">
+            <button id="capture-button" type="button" disabled>Take photo</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Review -->
+      <section id="screen-review" class="screen" hidden>
+        <h1>Your photo</h1>
+        <p class="instruction" data-instruction></p>
+        <div class="screen-body">
+          <div class="camera-frame">
+            <img id="photo-preview" alt="The photo you took" />
+          </div>
+          <p id="location-status" class="note"></p>
+          <p id="review-hint" class="message message--note" role="status" hidden></p>
+          <p id="review-error" class="message message--error" role="alert" hidden></p>
+          <div class="primary-action action-pair">
+            <button id="retake-button" type="button" class="button-secondary">Retake</button>
+            <button id="send-button" type="button" disabled>Send</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Checking -->
+      <section id="screen-checking" class="screen" hidden>
+        <h1>Checking your photo</h1>
+        <p class="instruction" data-instruction></p>
+        <div class="screen-body checking">
+          <div class="spinner" aria-hidden="true"></div>
+          <p>Usually under 10 seconds.</p>
+        </div>
+      </section>
+
+      <!-- Verdict -->
+      <section id="screen-verdict" class="screen" hidden>
+        <h1 id="verdict-heading">Verdict</h1>
+        <p class="instruction" data-instruction></p>
+        <div class="screen-body">
+          <p id="verdict-message" class="verdict-message"></p>
+          <ul id="verdict-checks" class="verdict-checks"></ul>
+          <p id="verdict-points" class="note" hidden></p>
+          <div class="primary-action">
+            <button id="verdict-button" type="button">Next clue</button>
+          </div>
+        </div>
+      </section>
+      <canvas id="snapshot" hidden></canvas>
 
       <section id="screen-finished" class="screen" hidden>
         <h1>All done</h1>

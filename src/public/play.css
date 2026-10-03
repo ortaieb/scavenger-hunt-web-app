@@ -491,6 +491,176 @@ button:disabled {
   background: #b91c1c;
 }
 
+/* Playing a checkpoint (issue #42). */
+.message--note {
+  background: var(--surface);
+  color: var(--text);
+  border-left: 4px solid var(--warning-text);
+  white-space: pre-line;
+}
+
+.message--note::before {
+  content: 'Note: ';
+  font-weight: 700;
+}
+
+.action-reason {
+  margin: 0 0 0.6rem;
+  color: var(--warning-text);
+  font-weight: 600;
+}
+
+.action-reason::before {
+  content: '⏸ ';
+}
+
+.action-pair {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.action-pair .button-secondary {
+  flex: 0 0 38%;
+  min-height: 52px;
+}
+
+.code-card {
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  background: var(--surface);
+}
+
+.code-head {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.code-value {
+  margin: 0.25rem 0;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 2.2rem;
+  font-weight: 700;
+  letter-spacing: 0.4em;
+  text-align: center;
+}
+
+.code-note {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.pose {
+  margin: 0.75rem 0 0;
+  font-size: 1.1rem;
+}
+
+.pose::before {
+  content: 'Pose: ';
+  font-weight: 700;
+}
+
+.camera-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  max-height: 55dvh;
+  margin-top: 0.75rem;
+  background: #000;
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.camera-frame video,
+.camera-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Front camera: mirror the live preview only. The photo is drawn from the
+   raw frame, so it's never mirrored. */
+.camera-frame video.mirrored {
+  transform: scaleX(-1);
+}
+
+.camera-switch {
+  margin-top: 0.75rem;
+}
+
+.camera-switch[hidden] {
+  display: none;
+}
+
+.checking {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--muted);
+}
+
+.spinner {
+  width: 3.5rem;
+  height: 3.5rem;
+  border: 0.35rem solid var(--surface);
+  border-top-color: var(--link);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 3s;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.verdict-message {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+}
+
+.verdict-checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.verdict-checks li {
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  background: var(--surface);
+  border-left: 4px solid var(--border);
+}
+
+.verdict-checks .check--passed {
+  border-left-color: #4ade80;
+}
+
+.verdict-checks .check--failed {
+  border-left-color: #f87171;
+}
+
+.verdict-checks .check--uncertain {
+  border-left-color: #facc15;
+}
+
+.check-reason {
+  display: block;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 /* Markdown pages: /privacy and /how-to-play. */
 .doc {
   max-width: 40rem;
