@@ -1,0 +1,376 @@
+/* The participant app at /play (issue #40). Built to be read outdoors on a
+   phone: 17 px base text, high contrast, nothing carried by colour alone,
+   one full-width primary button per screen within thumb reach, safe areas
+   respected, and working from 320 px wide. */
+
+:root {
+  color-scheme: dark;
+  --bg: #111318;
+  --surface: #1c1f27;
+  --border: #4b5563;
+  --text: #f9fafb;
+  --muted: #d1d5db;
+  --accent: #6366f1;
+  --accent-text: #ffffff;
+  --link: #c7d2fe;
+  --error-bg: #3b1416;
+  --error-text: #fecaca;
+  --warning-bg: #3a2e12;
+  --warning-text: #fde68a;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 17px;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+}
+
+a {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.app-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: calc(0.5rem + var(--safe-top)) calc(1rem + var(--safe-right)) 0.5rem calc(1rem + var(--safe-left));
+  background: var(--bg);
+  border-bottom: 1px solid var(--surface);
+}
+
+.app-name {
+  font-weight: 700;
+}
+
+.menu {
+  position: relative;
+}
+
+.menu summary {
+  list-style: none;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.4rem);
+  width: min(18rem, calc(100vw - 2rem));
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface);
+  display: grid;
+  gap: 0.75rem;
+}
+
+.menu-panel a {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.menu-team {
+  margin: 0;
+  color: var(--muted);
+}
+
+.screen-host {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 36rem;
+  margin: 0 auto;
+  padding: 1rem calc(1rem + var(--safe-right)) 0 calc(1rem + var(--safe-left));
+}
+
+.screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.screen[hidden] {
+  display: none;
+}
+
+.screen-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+h1 {
+  font-size: 1.6rem;
+  line-height: 1.2;
+  margin: 0.25rem 0 0.35rem;
+}
+
+h2 {
+  font-size: 1.05rem;
+  margin: 1rem 0 0.4rem;
+}
+
+.instruction {
+  margin: 0 0 1.25rem;
+  color: var(--muted);
+  font-size: 1.05rem;
+}
+
+.field-label {
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+input[type='text'] {
+  width: 100%;
+  min-height: 52px;
+  padding: 0.6rem 0.8rem;
+  border: 2px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1.3rem;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+input[type='text']::placeholder {
+  color: #6b7280;
+}
+
+input:focus-visible,
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 3px solid var(--link);
+  outline-offset: 2px;
+}
+
+.privacy {
+  margin: 1.25rem 0 0;
+  padding: 0.25rem 1rem 0.5rem;
+  border-radius: 0.75rem;
+  background: var(--surface);
+}
+
+.privacy h2 {
+  margin-top: 0.75rem;
+}
+
+.privacy ul,
+.reasons,
+ol {
+  padding-left: 1.2rem;
+}
+
+.privacy li,
+.reasons li,
+ol li {
+  margin-bottom: 0.4rem;
+}
+
+.consent {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  margin: 1.25rem 0 0;
+  padding: 0.75rem;
+  border: 2px solid var(--border);
+  border-radius: 0.75rem;
+  cursor: pointer;
+}
+
+.consent input {
+  flex: none;
+  width: 1.6rem;
+  height: 1.6rem;
+  margin: 0.1rem 0 0;
+  accent-color: var(--accent);
+}
+
+.secondary-link {
+  margin: 1rem 0 0;
+}
+
+.message {
+  margin: 1rem 0 0;
+  padding: 0.75rem 1rem;
+  border-radius: 0.6rem;
+}
+
+/* Colour is never the only signal: each message also starts with a word. */
+.message--error {
+  background: var(--error-bg);
+  color: var(--error-text);
+  border-left: 4px solid var(--error-text);
+}
+
+.message--error::before {
+  content: 'Problem: ';
+  font-weight: 700;
+}
+
+.message--warning {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  border-left: 4px solid var(--warning-text);
+}
+
+.message--warning::before {
+  content: 'Offline: ';
+  font-weight: 700;
+}
+
+.connection {
+  margin-bottom: 1rem;
+}
+
+.details {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  background: var(--surface);
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.5rem 1rem;
+  flex: none;
+}
+
+.details dt {
+  color: var(--muted);
+}
+
+.details dd {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.note {
+  color: var(--muted);
+  margin: 1rem 0;
+}
+
+.clue {
+  font-size: 1.4rem;
+  line-height: 1.35;
+}
+
+/* One primary action per screen: full-width, at least 48 px tall, at the
+   bottom within thumb reach, clear of the home indicator. */
+.primary-action {
+  position: sticky;
+  bottom: 0;
+  margin-top: auto;
+  padding: 1rem 0 calc(1rem + var(--safe-bottom));
+  background: linear-gradient(to bottom, transparent, var(--bg) 1rem);
+}
+
+button {
+  width: 100%;
+  min-height: 52px;
+  padding: 0.75rem 1rem;
+  border: none;
+  border-radius: 0.75rem;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 1.1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:disabled {
+  background: #374151;
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.button-secondary {
+  min-height: 44px;
+  font-size: 1rem;
+  font-weight: 600;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.button-danger {
+  min-height: 44px;
+  font-size: 1rem;
+  background: #b91c1c;
+}
+
+/* Markdown pages: /privacy and /how-to-play. */
+.doc {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: calc(1rem + var(--safe-top)) calc(1rem + var(--safe-right)) calc(2rem + var(--safe-bottom))
+    calc(1rem + var(--safe-left));
+}
+
+.doc h1 {
+  margin-top: 0.5rem;
+}
+
+.doc h2 {
+  font-size: 1.25rem;
+  margin-top: 1.75rem;
+}
+
+.doc h3 {
+  font-size: 1.05rem;
+  margin-top: 1.25rem;
+}
+
+.doc hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2rem 0;
+}
+
+.doc-back {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}

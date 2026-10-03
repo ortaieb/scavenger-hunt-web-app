@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#111318" />
+    <title>Scavenger Hunt</title>
+    <link rel="stylesheet" href="/play.css" />
+  </head>
+  <body>
+    <header class="app-bar">
+      <span class="app-name">Scavenger Hunt</span>
+      <details id="menu" class="menu" hidden>
+        <summary aria-label="Menu">Menu</summary>
+        <div class="menu-panel">
+          <p id="menu-team" class="menu-team"></p>
+          <a href="/how-to-play">How to play</a>
+          <a href="/privacy">Your photos and privacy</a>
+          <button id="leave" type="button" class="button-secondary">Leave this game</button>
+          <button id="leave-confirm" type="button" class="button-danger" hidden>
+            Tap again to leave. You'll need your team code to rejoin.
+          </button>
+        </div>
+      </details>
+    </header>
+
+    <main class="screen-host">
+      <!-- Join -->
+      <section id="screen-join" class="screen" hidden>
+        <h1>Join your team</h1>
+        <p class="instruction" data-instruction></p>
+
+        <form id="join-form" class="screen-body" novalidate>
+          <label for="team-code" class="field-label">Team code</label>
+          <input
+            id="team-code"
+            name="code"
+            type="text"
+            inputmode="text"
+            autocomplete="off"
+            autocapitalize="characters"
+            autocorrect="off"
+            spellcheck="false"
+            placeholder="FOX-7Q2K"
+            required
+          />
+
+          <section class="privacy" aria-labelledby="privacy-title">
+            <h2 id="privacy-title">Your photos and privacy</h2>
+            <p>
+              At each checkpoint you'll take a photo in the app, usually showing you with a code or pose we give you.
+              The photo is uploaded to the game server so we can check it. We also record the time and your location
+              when you submit it.
+            </p>
+            <ul>
+              <li>Photos are used only to verify your checkpoints while this game session is running.</li>
+              <li>They're checked by an AI model and, if needed, by the organiser. Other players don't see them.</li>
+              <li>Every photo is permanently deleted when the session closes.</li>
+              <li>
+                We never use your photos for anything else: no sharing, no marketing, no training AI models, and no
+                face recognition.
+              </li>
+            </ul>
+            <p><a href="/privacy">Read the full privacy notice</a></p>
+          </section>
+
+          <label class="consent">
+            <input id="consent" type="checkbox" />
+            <span>
+              I agree to my photos and checkpoint locations being used as described to verify my progress in this game.
+            </span>
+          </label>
+
+          <p id="join-error" class="message message--error" role="alert" hidden></p>
+          <p class="secondary-link"><a href="/how-to-play">How to play</a></p>
+
+          <div class="primary-action">
+            <button id="join-button" type="submit" disabled>Join</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Permissions -->
+      <section id="screen-permissions" class="screen" hidden>
+        <h1>Camera and location</h1>
+        <p class="instruction" data-instruction></p>
+
+        <div class="screen-body">
+          <div id="permissions-ask">
+            <p>The game needs both, only while you play:</p>
+            <ul class="reasons">
+              <li><strong>Camera</strong>: to take the photo at each checkpoint, inside the app.</li>
+              <li><strong>Location</strong>: sent with each photo, so the game can check you were at the checkpoint.</li>
+            </ul>
+            <p>When you tap Allow, your phone asks about the camera first, then location. Tap Allow both times.</p>
+          </div>
+
+          <div id="permissions-denied" hidden>
+            <p id="permissions-denied-what" class="message message--error" role="alert"></p>
+            <h2>iPhone (Safari)</h2>
+            <ol>
+              <li>Tap <strong>aA</strong> in the address bar, then <strong>Website Settings</strong>.</li>
+              <li>Set <strong>Camera</strong> and <strong>Location</strong> to <strong>Allow</strong>.</li>
+              <li>
+                If Location still fails: Settings › Privacy &amp; Security › Location Services › Safari Websites ›
+                <strong>While Using the App</strong>.
+              </li>
+            </ol>
+            <h2>Android (Chrome)</h2>
+            <ol>
+              <li>Tap the icon left of the address, then <strong>Permissions</strong>.</li>
+              <li>Turn on <strong>Camera</strong> and <strong>Location</strong>.</li>
+              <li>If Location still fails: check Location is on in the phone's quick settings.</li>
+            </ol>
+          </div>
+
+          <div class="primary-action">
+            <button id="permissions-button" type="button">Allow</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Loading -->
+      <section id="screen-loading" class="screen" hidden>
+        <h1>Scavenger Hunt</h1>
+        <p class="instruction" data-instruction></p>
+      </section>
+
+      <!-- Lobby -->
+      <section id="screen-lobby" class="screen" hidden>
+        <h1 id="lobby-title">Get ready</h1>
+        <p class="instruction" data-instruction></p>
+
+        <dl class="details screen-body">
+          <dt>Team</dt>
+          <dd id="lobby-team"></dd>
+          <dt>Game</dt>
+          <dd id="lobby-session"></dd>
+          <dt>Area</dt>
+          <dd id="lobby-area"></dd>
+          <dt>Planned start</dt>
+          <dd id="lobby-start"></dd>
+        </dl>
+        <p class="note">
+          The planned start is only a guide: the moderator starts the game. This screen moves on by itself.
+        </p>
+      </section>
+
+      <!-- Placeholders until #42 and #43 -->
+      <section id="screen-playing" class="screen" hidden>
+        <h1>Clue</h1>
+        <p class="instruction" data-instruction></p>
+        <p id="playing-clue" class="clue"></p>
+        <p class="note">Checking in at a checkpoint is coming soon.</p>
+      </section>
+
+      <section id="screen-finished" class="screen" hidden>
+        <h1>All done</h1>
+        <p class="instruction" data-instruction></p>
+      </section>
+
+      <section id="screen-ended" class="screen" hidden>
+        <h1>The session is over</h1>
+        <p class="instruction" data-instruction></p>
+      </section>
+
+      <p id="connection" class="message message--warning connection" role="status" hidden></p>
+    </main>
+
+    <script type="module" src="/play.js"></script>
+  </body>
+</html>
