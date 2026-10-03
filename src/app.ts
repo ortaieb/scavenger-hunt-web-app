@@ -344,5 +344,59 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     }
   });
 
+  // Relays the moderator's session controls and overview, for the same
+  // HTTPS/CORS reasons as the other relays (see issue #39). The moderator
+  // code travels in the Authorization header: forwarded unchanged when
+  // present, never added or defaulted when missing (so the game-server
+  // answers 401 itself), and never logged.
+  async function relayModerator(
+    req: Request,
+    res: ExpressResponse,
+    session: unknown,
+    action: 'start' | 'stop' | 'overview',
+  ): Promise<void> {
+    if (!isValidUuid(session)) {
+      res.status(400).json({ error: 'session must be a valid UUID' });
+      return;
+    }
+
+    const authorization = req.get('authorization');
+    try {
+      // Start and stop carry no body upstream: the session is in the path.
+      const upstream = await fetchWithTimeout(
+        doFetch,
+        new URL(`/sessions/${encodeURIComponent(session)}/${action}`, config.gameServerUrl),
+        {
+          method: action === 'overview' ? 'GET' : 'POST',
+          headers: authorization === undefined ? {} : { authorization },
+        },
+        config.gameServerTimeoutMs,
+      );
+      const body = await upstream.text();
+      res
+        .status(upstream.status)
+        .type(upstream.headers.get('content-type') ?? 'application/json')
+        .send(body);
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        res.status(504).json({ error: 'The game server took too long to respond' });
+        return;
+      }
+      res.status(502).json({ error: `Could not reach the game server: ${describeError(err)}` });
+    }
+  }
+
+  app.post('/moderator/start', express.json(), async (req: Request, res: ExpressResponse) => {
+    await relayModerator(req, res, (req.body as Record<string, unknown> | undefined)?.session, 'start');
+  });
+
+  app.post('/moderator/stop', express.json(), async (req: Request, res: ExpressResponse) => {
+    await relayModerator(req, res, (req.body as Record<string, unknown> | undefined)?.session, 'stop');
+  });
+
+  app.get('/moderator/overview', async (req: Request, res: ExpressResponse) => {
+    await relayModerator(req, res, req.query.session, 'overview');
+  });
+
   return app;
 }
