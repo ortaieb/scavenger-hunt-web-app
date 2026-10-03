@@ -49,6 +49,7 @@ const CHECK_LABELS = {
   photo_unique: 'New photo',
   scene_matches: 'Right place',
   pose_correct: 'Right pose',
+  session_running: 'Session running',
 };
 
 const CHECK_ICONS = { passed: '✓', failed: '✗', uncertain: '?' };
@@ -128,11 +129,16 @@ function buildChecklist(checks) {
   }
   return checks
     .filter((check) => check && check.outcome !== 'skipped')
-    .map((check) => ({
-      icon: CHECK_ICONS[check?.outcome] ?? '?',
-      label: CHECK_LABELS[check?.name] ?? String(check?.name ?? 'Check'),
-      reason: typeof check?.reason === 'string' ? check.reason : '',
-    }));
+    .map((check) => {
+      // The game-server names each check in `check` (see issue #38); `name`
+      // is only a fallback for older bodies.
+      const name = check.check ?? check.name;
+      return {
+        icon: CHECK_ICONS[check.outcome] ?? '?',
+        label: CHECK_LABELS[name] ?? String(name ?? 'Check'),
+        reason: typeof check.reason === 'string' ? check.reason : '',
+      };
+    });
 }
 
 function withAttempt(message, attempt) {
