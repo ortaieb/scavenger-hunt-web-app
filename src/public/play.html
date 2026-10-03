@@ -43,6 +43,12 @@
           <span id="sb-phase" class="sb-phase" hidden></span>
         </div>
       </div>
+
+      <!-- Connection banner (issue #43): over any screen when a call fails. -->
+      <div id="connection" class="message message--warning connection" role="status" hidden>
+        <span id="connection-text"></span>
+        <button id="connection-retry" type="button" class="connection-retry">Retry</button>
+      </div>
     </header>
 
     <dialog id="points-sheet" class="sheet" aria-labelledby="points-sheet-title">
@@ -260,17 +266,19 @@
       </section>
       <canvas id="snapshot" hidden></canvas>
 
+      <!-- Finished -->
       <section id="screen-finished" class="screen" hidden>
-        <h1>All done</h1>
+        <h1 id="finished-title">All checkpoints done</h1>
         <p class="instruction" data-instruction></p>
+        <div id="finished-lines" class="summary"></div>
       </section>
 
+      <!-- Session over -->
       <section id="screen-ended" class="screen" hidden>
         <h1>The session is over</h1>
         <p class="instruction" data-instruction></p>
+        <div id="ended-lines" class="summary"></div>
       </section>
-
-      <p id="connection" class="message message--warning connection" role="status" hidden></p>
     </main>
 
     <script type="module" src="/play.js"></script>

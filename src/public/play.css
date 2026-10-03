@@ -413,7 +413,33 @@ ol li {
 }
 
 .connection {
-  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 0.5rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.connection[hidden] {
+  display: none;
+}
+
+.connection-retry {
+  flex: none;
+  width: auto;
+  min-height: 44px;
+  margin-left: auto;
+  padding: 0 1rem;
+  font-size: 1rem;
+  background: var(--warning-text);
+  color: #111318;
+}
+
+.summary {
+  padding: 0.25rem 1rem;
+  border-radius: 0.75rem;
+  background: var(--surface);
+  font-size: 1.1rem;
 }
 
 .details {

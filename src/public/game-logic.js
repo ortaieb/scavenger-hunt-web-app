@@ -203,7 +203,11 @@ export function clockOffset(serverTime, receivedAt) {
  *   screen: Screen | null,
  *   message: string,
  *   forgetIdentity: boolean,
+ *   reload: boolean,
+ *   offline: boolean,
  * }} ErrorOutcome
+ *   `reload`: ask GET /state where the team stands now. `offline`: the
+ *   call never got an answer, so show the connection banner.
  */
 
 /**
@@ -221,17 +225,24 @@ export function clockOffset(serverTime, receivedAt) {
 export function screenForError(status, body) {
   const code = body && typeof body === 'object' && 'code' in body ? body.code : undefined;
 
-  if (code === 'session_stopped') {
-    return outcome('ended', 'This session is over.');
-  }
-  if (code === 'session_not_started') {
-    return outcome('lobby', '');
+  switch (code) {
+    case 'session_not_started':
+      return outcome('lobby', "The session hasn't started yet.", { reload: true });
+    case 'session_stopped':
+      // On Join this is the whole message: "This session is over".
+      return outcome('ended', 'This session is over.', { reload: true });
+    case 'hunt_finished':
+      return outcome('finished', '', { reload: true });
+    case 'not_current_checkpoint':
+      return outcome(null, '', { reload: true });
+    case 'checkpoint_closed':
+      return outcome('clue', "This checkpoint isn't open yet. Check back soon.", { reload: true });
   }
 
   if (status === 404) {
     // An unknown team code on join, or a stored identity the server no
     // longer knows on /state: either way, back to Join with a clean slate.
-    return outcome('join', "We don't recognise that team code. Check it and try again.", true);
+    return outcome('join', "We don't recognise that team code. Check it and try again.", { forgetIdentity: true });
   }
   if (status === 409) {
     // Today's /join answers a plain 409 when the session is over.
@@ -241,13 +252,72 @@ export function screenForError(status, body) {
     return outcome(null, 'Check your team code and tick the box to agree, then try again.');
   }
   if (status === 0 || status === 502 || status === 503 || status === 504) {
-    return outcome(null, "No connection. We'll retry when you're back online.");
+    return outcome(null, "No connection. We'll retry when you're back online.", { offline: true });
   }
   return outcome(null, `Something went wrong (error ${status}). Please try again.`);
 }
 
-function outcome(screen, message, forgetIdentity = false) {
-  return { screen, message, forgetIdentity };
+/**
+ * @param {Screen | null} screen
+ * @param {string} message
+ * @param {{ forgetIdentity?: boolean, reload?: boolean, offline?: boolean }} [flags]
+ * @returns {ErrorOutcome}
+ */
+function outcome(screen, message, { forgetIdentity = false, reload = false, offline = false } = {}) {
+  return { screen, message, forgetIdentity, reload, offline };
+}
+
+/** The status `/state` would report for each screen an error can lead to. */
+const STATUS_FOR_SCREEN = { lobby: 'not_started', finished: 'finished', ended: 'ended' };
+
+/**
+ * Applies an error's outcome to the last known state at once, so the
+ * player lands on the right screen without waiting for the next poll (which
+ * then confirms it). Leaves the state alone for outcomes that don't move.
+ *
+ * @param {GameState | null} state
+ * @param {ErrorOutcome} errorOutcome
+ * @returns {GameState | null}
+ */
+export function stateAfterError(state, errorOutcome) {
+  if (!state) {
+    return state;
+  }
+  const status = STATUS_FOR_SCREEN[errorOutcome.screen ?? ''];
+  if (status) {
+    return { ...state, status, current: status === 'not_started' ? state.current : null };
+  }
+  if (errorOutcome.screen === 'clue' && state.current) {
+    // checkpoint_closed: back on the Clue, with "I'm here" disabled.
+    return { ...state, current: { ...state.current, open: false } };
+  }
+  return state;
+}
+
+const SESSION_REJECTIONS = new Set(['session_not_started', 'session_stopped']);
+
+/**
+ * A photo sent outside the session comes back as a `failed` verdict whose
+ * rejection code is `session_not_started` or `session_stopped`: the server
+ * records it so teams can challenge results later. That's not "Not quite",
+ * so it's treated like the matching 409.
+ *
+ * @param {string} bodyText the /challenge response body
+ * @returns {ErrorOutcome | null} null for any other response
+ */
+export function sessionRejectionFor(bodyText) {
+  let body;
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    return null;
+  }
+  const rejections = body?.verdict?.checkpoint?.rejections;
+  if (!Array.isArray(rejections)) {
+    return null;
+  }
+  const code = rejections.map((rejection) => rejection?.code).find((c) => SESSION_REJECTIONS.has(c));
+  return code ? screenForError(409, { code }) : null;
 }
 
 /**
@@ -589,8 +659,8 @@ function readIssuedCode(body) {
 }
 
 /**
- * Until issue #43 maps every `code`, an arrive that's refused stays put
- * with a message, except where screenForError already knows better.
+ * A refused arrive goes where its `code` says (issue #43). A plain 409
+ * from an older game-server stays put and reloads the state.
  *
  * @param {number} status
  * @param {unknown} body
@@ -599,8 +669,7 @@ function readIssuedCode(body) {
 function arriveError(status, body) {
   const hasCode = body && typeof body === 'object' && 'code' in body;
   if (status === 409 && !hasCode) {
-    // e.g. "not your current checkpoint": the next state poll sorts it out.
-    return outcome(null, "Couldn't check in here just now. Please try again.");
+    return outcome(null, "Couldn't check in here just now. Please try again.", { reload: true });
   }
   if (status === 200 || status === 201) {
     return outcome(null, 'Something went wrong. Please try again.');
@@ -704,21 +773,80 @@ export function verdictHeading(checkpoint) {
  * How often to poll `/state` on each screen, in ms, or 0 for not at all:
  * every 10 s while waiting (lobby, clue), every 30 s on Capture and Review
  * so a stop is noticed without draining the battery, and not while a photo
- * is being checked or a verdict is up.
+ * is being checked or a verdict is up. Finished keeps polling every 10 s for
+ * the moderator's stop, and Session over until the result is final.
  *
  * @param {Screen} screen
+ * @param {GameState | null} [state]
  * @returns {number}
  */
-export function pollIntervalFor(screen) {
+export function pollIntervalFor(screen, state = null) {
   switch (screen) {
     case 'loading':
     case 'lobby':
     case 'clue':
+    case 'finished':
       return 10_000;
+    case 'ended':
+      // Until the final result is in (an older game-server has no score).
+      return state?.score && state.score.final !== true ? 10_000 : 0;
     case 'capture':
     case 'review':
       return 30_000;
     default:
       return 0;
   }
+}
+
+// --- finished and session over (issue #43) ---------------------------------
+
+/**
+ * The Finished screen: "All 3 checkpoints done", the points, and waiting
+ * for the moderator.
+ *
+ * @param {GameState | null} state
+ * @returns {{ title: string, lines: string[] }}
+ */
+export function finishedSummary(state) {
+  const total = state?.progress?.total;
+  const title = Number.isInteger(total) ? `All ${total} checkpoints done` : 'All checkpoints done';
+  const lines = [];
+  const points = pointsLabel(state?.score);
+  if (points) {
+    lines.push(`Points so far: ${points.text.replace(' •', '')}. Lowest wins.`);
+    if (points.inReview) {
+      lines.push('A photo is still in review, which may lower your points once accepted.');
+    }
+  }
+  lines.push('Wait for the moderator to finish the session. This screen moves on by itself.');
+  return { title, lines };
+}
+
+/**
+ * The Session over screen: when the moderator finished, and the final
+ * points and place. The server sends only this team's place, not how many
+ * teams played.
+ *
+ * @param {GameState | null} state
+ * @returns {{ title: string, lines: string[] }}
+ */
+export function sessionOverSummary(state) {
+  const lines = [];
+  const stoppedAt = formatPlannedTime(state?.session?.['stopped-at']);
+  lines.push(stoppedAt ? `The moderator finished the session at ${stoppedAt}.` : 'The moderator finished the session.');
+
+  const score = state?.score;
+  if (score && typeof score.points === 'number') {
+    const unit = score.points === 1 ? 'point' : 'points';
+    if (score.final === true) {
+      lines.push(`Final score: ${score.points} ${unit}.`);
+      if (typeof score.place === 'number') {
+        lines.push(`Your team came ${ordinal(score.place)}. Lowest wins.`);
+      }
+    } else {
+      lines.push(`Score: ${score.points} ${unit}. The final result is on its way.`);
+    }
+  }
+  // "Thanks for playing!" is already the screen's instruction line.
+  return { title: 'The session is over', lines };
 }

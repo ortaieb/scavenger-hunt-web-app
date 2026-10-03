@@ -38,7 +38,30 @@ on the right screen.
 | Review | A photo taken: the photo, Retake and **Send**, which posts to `POST /challenge` with the stored identity and `current.sequence` as `checkpoint` |
 | Checking | The upload in flight: "Usually under 10 seconds" |
 | Verdict | The server's verdict: done, in review or not quite, with the per-check list (skipped checks hidden) and the new points total; **Next clue** reloads `GET /state`, **Try again** arrives again for a fresh code |
-| Finished, Session over | Placeholders until issue #43 |
+| Finished | `status: finished`: "All 3 checkpoints done", the points, and wait for the moderator; polls every 10 s |
+| Session over | `session.phase: stopped` (or `status: ended`): when the moderator finished, and the final points and place; polls every 10 s until the result is final |
+
+A **connection banner** with **Retry** shows over any screen when a call
+gets no answer; it clears on the next good `GET /state`. A photo on Review
+stays in memory, so Send can be tried again.
+
+Refusals (issue #43) are routed by the game-server's `code`, never its
+`detail` text, moving the player at once and then confirming with
+`GET /state`:
+
+| `code` | App goes to |
+| --- | --- |
+| `session_not_started` | Lobby |
+| `session_stopped` | Session over (Join says "This session is over") |
+| `hunt_finished` | Finished |
+| `not_current_checkpoint` | Reloads the state |
+| `checkpoint_closed` | Clue, with "not open yet" |
+
+A photo sent outside the session comes back as a `failed` verdict whose
+rejection code is `session_not_started` or `session_stopped` (the server
+records it so teams can challenge results later). The app treats it like
+the matching `409`, not as "Not quite", and drops a photo in progress once
+the session is over.
 
 Playing a checkpoint (issue #42): the code is issued and shown but **not
 checked by the referee yet**, so teams don't need it in the photo. If it

@@ -17,6 +17,10 @@ import {
   checkpointAfterVerdict,
   checkpointSending,
   clockOffsetFromState,
+  finishedSummary,
+  sessionOverSummary,
+  sessionRejectionFor,
+  stateAfterError,
   codeExpired,
   codeTimeLeft,
   clueLineFor,
@@ -74,6 +78,8 @@ const permissionsAskEl = el('permissions-ask');
 const permissionsDeniedEl = el('permissions-denied');
 const permissionsDeniedWhatEl = el('permissions-denied-what');
 const connectionEl = el('connection');
+const connectionTextEl = el('connection-text');
+const connectionRetryBtn = el('connection-retry');
 const statusBarEl = el('status-bar');
 const sbTeamEl = el('sb-team');
 const sbProgressEl = el('sb-progress');
@@ -99,6 +105,9 @@ const appState = {
 
 let pollTimer = null;
 let latestStateRequestId = 0;
+// What the connection banner says while `appState.offline` (a lost
+// connection, or an error the player can retry).
+let connectionMessage = '';
 
 // Server time minus the phone's time, re-synced on every state response, so
 // the countdown follows the server's clock rather than the phone's.
@@ -150,7 +159,13 @@ function render() {
   menuTeamEl.textContent = appState.identity ? `Team: ${appState.identity.team}` : '';
 
   connectionEl.hidden = !appState.offline || screen === 'join';
-  connectionEl.textContent = appState.offline ? instruction : '';
+  connectionTextEl.textContent = appState.offline ? connectionMessage || instruction : '';
+
+  if (screen === 'ended') {
+    // A photo in progress is dropped once the session is over.
+    appState.checkpoint = null;
+    clearPhoto();
+  }
 
   renderStatusBar(screen);
   if (screen === 'permissions') {
@@ -170,6 +185,12 @@ function render() {
   }
   if (screen === 'verdict') {
     renderVerdict();
+  }
+  if (screen === 'finished') {
+    renderSummary('finished', finishedSummary(appState.state));
+  }
+  if (screen === 'ended') {
+    renderSummary('ended', sessionOverSummary(appState.state));
   }
   syncCamera(screen);
 
@@ -268,6 +289,32 @@ sbPointsBtn.addEventListener('click', () => {
     }),
   );
   pointsSheetEl.showModal();
+});
+
+function renderSummary(screen, summary) {
+  if (screen === 'finished') {
+    el('finished-title').textContent = summary.title;
+  }
+  el(`${screen}-lines`).replaceChildren(
+    ...summary.lines.map((line) => {
+      const p = document.createElement('p');
+      p.textContent = line;
+      return p;
+    }),
+  );
+}
+
+/** Shows the connection banner, over any screen, until the next good answer. */
+function goOffline(message) {
+  appState.offline = true;
+  connectionMessage = message;
+}
+
+connectionRetryBtn.addEventListener('click', () => {
+  connectionRetryBtn.disabled = true;
+  void refreshState().finally(() => {
+    connectionRetryBtn.disabled = false;
+  });
 });
 
 function renderPermissions() {
@@ -436,6 +483,7 @@ async function refreshState() {
   if (status === 200 && body && typeof body === 'object') {
     appState.state = /** @type {import('./game-logic.js').GameState} */ (body);
     appState.offline = false;
+    connectionMessage = '';
     clockOffsetMs = clockOffsetFromState(appState.state, receivedAt);
     render();
     return;
@@ -450,11 +498,8 @@ async function refreshState() {
   }
   // Keep showing the last known screen; just say we're offline (or what
   // went wrong), and keep polling.
-  appState.offline = true;
+  goOffline(outcome.offline ? '' : outcome.message);
   render();
-  if (status !== 0 && status !== 502 && status !== 503 && status !== 504) {
-    connectionEl.textContent = outcome.message;
-  }
 }
 
 function schedulePolling(screen) {
@@ -464,7 +509,7 @@ function schedulePolling(screen) {
     return;
   }
   // Keep retrying when offline, whatever the screen, so it recovers.
-  const interval = appState.offline ? OFFLINE_RETRY_MS : pollIntervalFor(screen);
+  const interval = appState.offline ? OFFLINE_RETRY_MS : pollIntervalFor(screen, appState.state);
   if (interval > 0) {
     pollTimer = setTimeout(() => void refreshState(), interval);
   }
@@ -668,16 +713,37 @@ async function arriveAt(sequence) {
   return checkpointAfterArrive(appState.checkpoint, sequence, result.status, result.body);
 }
 
-async function applyArriveError(error, messageId) {
+/**
+ * Takes the player where a refused call's `code` says (issue #43): straight
+ * away from the last known state, then confirmed by a fresh GET /state.
+ *
+ * @param {import('./game-logic.js').ErrorOutcome} error
+ * @param {string} messageId where to show a message for an outcome that stays put
+ */
+async function applyError(error, messageId) {
   if (error.forgetIdentity) {
     forgetIdentity();
     showJoinError(error.message);
     render();
     return;
   }
-  showMessage(messageId, error.message);
-  // Let the server say where the team really stands.
-  await refreshState();
+  if (error.offline) {
+    goOffline('');
+  } else if (error.screen === 'clue') {
+    showMessage('clue-error', error.message);
+  } else if (error.screen === null) {
+    showMessage(messageId, error.message);
+  }
+  if (error.screen !== null) {
+    // Progress on this checkpoint no longer applies.
+    appState.checkpoint = null;
+    clearPhoto();
+  }
+  appState.state = stateAfterError(appState.state, error);
+  render();
+  if (error.reload) {
+    await refreshState();
+  }
 }
 
 arriveBtn.addEventListener('click', async () => {
@@ -692,7 +758,7 @@ arriveBtn.addEventListener('click', async () => {
   busy = false;
   if (error) {
     render();
-    await applyArriveError(error, 'clue-error');
+    await applyError(error, 'clue-error');
     return;
   }
   appState.checkpoint = checkpoint;
@@ -810,6 +876,18 @@ sendBtn.addEventListener('click', async () => {
 
   const identity = identityFor(checkpoint.sequence);
   const result = await api.sendPhoto({ ...identity, image: photoBlob, position: photoPosition });
+
+  // A photo sent outside the session is recorded but doesn't count: that's
+  // Session over (or the lobby), never "Not quite".
+  const sessionRejection = sessionRejectionFor(result.text);
+  if (sessionRejection) {
+    await applyError(sessionRejection, 'review-error');
+    return;
+  }
+  if (result.status === 0) {
+    // The photo stays in memory, so Send can be tried again.
+    goOffline("No connection. Your photo is kept: tap Send to try again.");
+  }
   appState.checkpoint = checkpointAfterVerdict(appState.checkpoint, result.status, result.text);
   if (appState.checkpoint.step === 'verdict') {
     clearPhoto();
@@ -842,7 +920,7 @@ verdictBtn.addEventListener('click', async () => {
   if (error) {
     appState.checkpoint = null;
     render();
-    await applyArriveError(error, 'clue-error');
+    await applyError(error, 'clue-error');
     return;
   }
   appState.checkpoint = next;
