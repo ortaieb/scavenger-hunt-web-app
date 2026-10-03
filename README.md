@@ -179,6 +179,42 @@ otherwise `404`, `422`, or `409`.
 The `participant` id is a team's key to its clues and codes, and `/arrive`'s
 `code` is a short-lived secret — neither is ever logged by these relays.
 
+### Moderator: /moderator/start, /moderator/stop, /moderator/overview
+
+Three relays for the moderator screen (issue #39), following the same
+pattern as the game-loop relays above: `fetchWithTimeout` with
+`GAME_SERVER_TIMEOUT_MS` (`504` on a timeout, `502` when the game-server
+can't be reached), otherwise the upstream status, content type and body
+unchanged.
+
+| This app | Game-server | Body |
+| --- | --- | --- |
+| `POST /moderator/start` | `POST ${GAME_SERVER_URL}/sessions/{session}/start` | `{"session": "<uuid>"}` |
+| `POST /moderator/stop` | `POST ${GAME_SERVER_URL}/sessions/{session}/stop` | `{"session": "<uuid>"}` |
+| `GET /moderator/overview?session=<uuid>` | `GET ${GAME_SERVER_URL}/sessions/{session}/overview` | none |
+
+`session` must be a UUID (`400` otherwise, nothing sent upstream). Start
+and stop send **no body** upstream — the session is in the path.
+
+The moderator code travels in the **`Authorization` header**, which is
+forwarded unchanged. It is **never logged**, and never added or defaulted:
+a request without it is forwarded without it, so the game-server answers
+`401 {"detail": "moderator code required", "code": "moderator_unauthorised"}`.
+
+Start and stop answer `201` when the phase changes and `200` on a repeat,
+with the session clock: `{"phase", "planned-start", "planned-end",
+"started-at", "stopped-at", "server-time"}` (`phase` is `scheduled`,
+`running` or `stopped`). Otherwise `404` for an unknown session, or `409
+{"detail", "code"}` with `session_stopped` (start after stop) or
+`session_not_started` (stop before start). The overview answers `{"session":
+<the clock>, "teams": [...], "blocked": [...]}` — standings, each team's
+last completed and current checkpoint, and the newest attempts refused for
+being outside the session.
+
+The game-loop relays forward bodies verbatim, so the game-server's newer
+fields (`session` and `score` in `/state`, `code` in error bodies) pass
+through unchanged.
+
 ## Scripts
 
 | Script              | Description                                  |
