@@ -133,6 +133,13 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   app.get('/', sendPlay);
   app.get('/play', sendPlay);
 
+  // The moderator screen (see issue #44). The session id comes from the
+  // link (/moderator?session=<uuid>); the moderator code is typed on the
+  // page and only ever sent in the Authorization header.
+  app.get('/moderator', (_req: Request, res: ExpressResponse) => {
+    res.sendFile(path.join(publicDir, 'moderator.html'));
+  });
+
   const privacyPage = markdownPage('privacy-notice.md', 'Your photos and privacy');
   app.get('/privacy', async (_req: Request, res: ExpressResponse) => {
     res.type('html').send(await privacyPage());

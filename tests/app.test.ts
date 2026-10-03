@@ -86,6 +86,48 @@ describe.each(['/play.js', '/play.css', '/api.js', '/game-logic.js'])('GET %s', 
   });
 });
 
+describe('GET /moderator', () => {
+  it('serves the moderator screen', async () => {
+    const response = await request(createApp(testConfig)).get(`/moderator?session=${VALID_SESSION}`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toMatch(/^text\/html/);
+    expect(response.text).toContain('<script type="module" src="/moderator.js"></script>');
+  });
+
+  it('asks for the code in a form that never puts it in a URL', async () => {
+    const response = await request(createApp(testConfig)).get('/moderator');
+
+    // POST, so even without JavaScript the code isn't sent as a query string.
+    expect(response.text).toMatch(/<form id="sign-in-form" method="post"/);
+    expect(response.text).toMatch(/id="moderator-code"[\s\S]*?type="password"/);
+  });
+});
+
+describe.each(['/moderator.js', '/moderator-logic.js', '/moderator.css'])('GET %s', (asset) => {
+  it('is served', async () => {
+    const response = await request(createApp(testConfig)).get(asset);
+
+    expect(response.status).toBe(200);
+  });
+});
+
+describe('the moderator code', () => {
+  it.each(['/moderator.js', '/moderator-logic.js'])('is never kept in localStorage by %s', async (asset) => {
+    const response = await request(createApp(testConfig)).get(asset);
+
+    expect(response.text).not.toContain('localStorage');
+  });
+
+  it('is kept in sessionStorage and sent only as a Bearer token', async () => {
+    const response = await request(createApp(testConfig)).get('/moderator.js');
+
+    expect(response.text).toContain('sessionStorage.setItem');
+    expect(response.text).toContain('authorization: `Bearer ${');
+    expect(response.text).not.toMatch(/console\./);
+  });
+});
+
 describe('GET /privacy', () => {
   it('renders the privacy notice as HTML, without the notes for whoever fills it in', async () => {
     const response = await request(createApp(testConfig)).get('/privacy');

@@ -264,7 +264,32 @@ otherwise `404`, `422`, or `409`.
 The `participant` id is a team's key to its clues and codes, and `/arrive`'s
 `code` is a short-lived secret — neither is ever logged by these relays.
 
-### Moderator: /moderator/start, /moderator/stop, /moderator/overview
+### /moderator
+
+The moderator screen (issue #44), for a phone or a laptop:
+`/moderator?session=<uuid>`. The moderator code is typed once on the page,
+kept in `sessionStorage` (so it goes when the tab closes) and sent only as
+`Authorization: Bearer <code>`: never in a URL, never in `localStorage`,
+never logged. A `401` says "That code isn't right for this session." and
+asks again.
+
+- **Phase badge**: Not started, Running or Finished, with the planned and
+  actual times and the countdown to the planned end; once that passes,
+  "Running, past planned end" as a reminder to finish.
+- **Start session** (not started only, at any time) and **Finish session
+  now** (running only, in the warning colour), each after a confirmation.
+- **Standings**, lowest points first: joined or not, checkpoints completed,
+  points, photos in review, the current checkpoint, and the last one
+  completed with how long ago it was approved, to spot a team that's stuck.
+  After the finish they're final, with places.
+- **Blocked outside the session**: newest first, up to 50 (time, team, what
+  they tried and why).
+- Refreshes the overview every 5 s while the page is visible. Shows
+  checkpoint numbers and names, never clues, locations or photos.
+
+The pure logic is in `moderator-logic.js`, unit-tested like `game-logic.js`.
+
+### Moderator relays: /moderator/start, /moderator/stop, /moderator/overview
 
 Three relays for the moderator screen (issue #39), following the same
 pattern as the game-loop relays above: `fetchWithTimeout` with
@@ -344,6 +369,8 @@ src/
   server.ts    HTTP/HTTPS server construction
   public/      static assets for /play and /challenge (html, css, client js)
     game-logic.js       pure screen/instruction/error logic for /play, unit tested directly
+    moderator-logic.js  pure phase/standings/blocked logic for /moderator, unit tested directly
+    moderator.js        /moderator's DOM, sign-in and polling wiring
     api.js              /play's calls to this app's relays, with timeouts
     play.js             /play's DOM/permissions/polling wiring
     challenge-logic.js  pure identity/verdict/hint logic, unit tested directly
