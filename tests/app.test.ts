@@ -147,6 +147,38 @@ describe('GET /how-to-play', () => {
     expect(response.status).toBe(200);
     expect(response.text).toContain('<h1>How to play</h1>');
   });
+
+  it("points the guide's links at this app's pages", async () => {
+    const response = await request(createApp(testConfig)).get('/how-to-play');
+
+    expect(response.text).toContain('href="/privacy"');
+    expect(response.text).not.toContain('href="privacy-notice.md"');
+  });
+});
+
+describe('GET /moderator-guide', () => {
+  it('renders the moderator guide as HTML', async () => {
+    const response = await request(createApp(testConfig)).get('/moderator-guide');
+
+    expect(response.status).toBe(200);
+    expect(response.text).toContain('<h1>Moderator guide</h1>');
+  });
+});
+
+describe('the guides', () => {
+  it.each(['/how-to-play', '/moderator-guide'])('serves every screenshot %s shows', async (page) => {
+    const app = createApp(testConfig);
+    const html = (await request(app).get(page)).text;
+    const images = [...html.matchAll(/<img src="([^"]+)"/g)].map((match) => match[1]!);
+
+    expect(images.length).toBeGreaterThan(0);
+    for (const image of images) {
+      // Relative to the page, so `images/x.png` is served at `/images/x.png`.
+      const response = await request(app).get(`/${image}`);
+      expect(response.status, image).toBe(200);
+      expect(response.headers['content-type']).toBe('image/png');
+    }
+  });
 });
 
 describe('GET /health', () => {

@@ -61,7 +61,9 @@ function markdownPage(file: string, title: string): () => Promise<string> {
   let page: Promise<string> | undefined;
   return () => {
     page ??= readFile(path.join(docsDir, file), 'utf8')
-      .then((markdown) => marked.parse(markdown.replace(/<!--[\s\S]*?-->/g, ''), { async: false }))
+      .then((markdown) =>
+        rewriteDocLinks(marked.parse(markdown.replace(/<!--[\s\S]*?-->/g, ''), { async: false })),
+      )
       .then(
         (body) => `<!doctype html>
 <html lang="en">
@@ -87,6 +89,20 @@ ${body}
       });
     return page;
   };
+}
+
+// The docs link to each other by file name, so the links work on GitHub
+// too; served by this app, they go to its own pages instead.
+const DOC_ROUTES: Record<string, string> = {
+  'privacy-notice.md': '/privacy',
+  'user-guide.md': '/how-to-play',
+  'moderator-guide.md': '/moderator-guide',
+};
+
+function rewriteDocLinks(html: string): string {
+  return html.replace(/href="([\w-]+\.md)"/g, (match, file: string) =>
+    DOC_ROUTES[file] ? `href="${DOC_ROUTES[file]}"` : match,
+  );
 }
 
 function describeError(err: unknown): string {
@@ -149,6 +165,15 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   app.get('/how-to-play', async (_req: Request, res: ExpressResponse) => {
     res.type('html').send(await userGuidePage());
   });
+
+  const moderatorGuidePage = markdownPage('moderator-guide.md', 'Moderator guide');
+  app.get('/moderator-guide', async (_req: Request, res: ExpressResponse) => {
+    res.type('html').send(await moderatorGuidePage());
+  });
+
+  // The guides' screenshots, linked as `images/…` so they also show on
+  // GitHub (see issue #45).
+  app.use('/images', express.static(path.join(docsDir, 'images')));
 
   // Liveness signal for the deployment platform (Railway — see issue #24)
   // to decide when to switch traffic to a new instance. Deliberately cheap:
