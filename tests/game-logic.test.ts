@@ -19,6 +19,10 @@ import {
   teamLabel,
   timeLeftFor,
   checkpointAfterArrive,
+  finishedSummary,
+  sessionOverSummary,
+  sessionRejectionFor,
+  stateAfterError,
   checkpointAfterPhoto,
   checkpointAfterRetake,
   checkpointAfterVerdict,
@@ -200,6 +204,8 @@ describe('screenForError', () => {
       screen: 'ended',
       message: 'This session is over.',
       forgetIdentity: false,
+      reload: false,
+      offline: false,
     });
   });
 
@@ -220,6 +226,8 @@ describe('screenForError', () => {
       screen: null,
       message: "No connection. We'll retry when you're back online.",
       forgetIdentity: false,
+      reload: false,
+      offline: true,
     });
   });
 
@@ -691,6 +699,193 @@ describe('playing a checkpoint', () => {
       ['join', 0],
     ] as const)('polls %s every %i ms', (screen, ms) => {
       expect(pollIntervalFor(screen)).toBe(ms);
+    });
+  });
+});
+
+describe('finished, session over and errors (issue #43)', () => {
+  describe('screenForError maps every code to its screen', () => {
+    it.each([
+      ['session_not_started', 'lobby', "The session hasn't started yet."],
+      ['session_stopped', 'ended', 'This session is over.'],
+      ['hunt_finished', 'finished', ''],
+      ['not_current_checkpoint', null, ''],
+      ['checkpoint_closed', 'clue', "This checkpoint isn't open yet. Check back soon."],
+    ])('%s → %s', (code, screen, message) => {
+      const result = screenForError(409, { detail: 'whatever the server says', code });
+
+      expect(result.screen).toBe(screen);
+      expect(result.message).toBe(message);
+      expect(result.reload).toBe(true);
+      expect(result.forgetIdentity).toBe(false);
+    });
+
+    it('branches on code, not detail', () => {
+      expect(screenForError(409, { detail: 'session has ended', code: 'not_current_checkpoint' }).screen).toBeNull();
+    });
+
+    it('says "This session is over" on Join', () => {
+      expect(screenForError(409, { detail: 'session has ended', code: 'session_stopped' }).message).toBe(
+        'This session is over.',
+      );
+    });
+
+    it('marks a call that never came back as offline', () => {
+      expect(screenForError(0, null).offline).toBe(true);
+      expect(screenForError(409, { code: 'session_stopped' }).offline).toBe(false);
+    });
+  });
+
+  describe('checkpointAfterArrive uses the same mapping', () => {
+    it.each([
+      ['session_not_started', 'lobby'],
+      ['session_stopped', 'ended'],
+      ['hunt_finished', 'finished'],
+      ['not_current_checkpoint', null],
+      ['checkpoint_closed', 'clue'],
+    ])('%s → %s', (code, screen) => {
+      const { error } = checkpointAfterArrive(null, 2, 409, { detail: '…', code });
+      expect(error?.screen).toBe(screen);
+      expect(error?.reload).toBe(true);
+    });
+  });
+
+  describe('stateAfterError', () => {
+    const outcomeFor = (code: string) => screenForError(409, { code });
+    const app = (state: Record<string, unknown>) => ({ identity, permissions: 'granted' as const, state: state as never });
+
+    it.each([
+      ['session_not_started', 'lobby'],
+      ['session_stopped', 'ended'],
+      ['hunt_finished', 'finished'],
+      ['checkpoint_closed', 'clue'],
+    ])('moves straight to the right screen for %s', (code, screen) => {
+      const state = stateAfterError(playing, outcomeFor(code));
+      expect(screenFor(app(state as never))).toBe(screen);
+    });
+
+    it('disables "I\'m here" for checkpoint_closed', () => {
+      expect(stateAfterError(playing, outcomeFor('checkpoint_closed'))?.current?.open).toBe(false);
+    });
+
+    it('leaves the state alone for not_current_checkpoint (the reload sorts it out)', () => {
+      expect(stateAfterError(playing, outcomeFor('not_current_checkpoint'))).toBe(playing);
+    });
+
+    it('does nothing without a state', () => {
+      expect(stateAfterError(null, outcomeFor('session_stopped'))).toBeNull();
+    });
+  });
+
+  describe('sessionRejectionFor', () => {
+    function photoVerdict(rejections: Array<{ code: string; message: string }>, verdict = 'failed') {
+      return JSON.stringify({
+        verdict: {
+          game: 'hunt-1',
+          participant: identity.participant,
+          checkpoint: {
+            sequence: 2,
+            attempt: 1,
+            time: '2026-10-03T13:05:02Z',
+            verdict,
+            checks: [{ check: 'session_running', outcome: 'failed', confidence: 1, reason: 'Session over.' }],
+            rejections,
+          },
+        },
+        image_id: 'img-1',
+      });
+    }
+
+    it.each([
+      ['session_stopped', 'The session is over. This photo was recorded but doesn\'t count.', 'ended'],
+      ['session_not_started', "The session hasn't started yet.", 'lobby'],
+    ])('treats a %s rejection like the 409, not as "Not quite"', (code, message, screen) => {
+      // window_open usually fails too; the session code wins.
+      const body = photoVerdict([
+        { code: 'outside_window', message: 'Outside the window.' },
+        { code, message },
+      ]);
+
+      expect(sessionRejectionFor(body)?.screen).toBe(screen);
+    });
+
+    it('is null for an ordinary failed verdict, a pass and a non-verdict body', () => {
+      expect(sessionRejectionFor(photoVerdict([{ code: 'pose_mismatch', message: 'Pose.' }]))).toBeNull();
+      expect(sessionRejectionFor(photoVerdict([], 'pass'))).toBeNull();
+      expect(sessionRejectionFor('{"error":"took too long"}')).toBeNull();
+      expect(sessionRejectionFor('not json')).toBeNull();
+    });
+  });
+
+  describe('polling', () => {
+    it('polls Finished every 10 s', () => {
+      expect(pollIntervalFor('finished')).toBe(10_000);
+    });
+
+    it('polls Session over only until the result is final', () => {
+      expect(pollIntervalFor('ended', { status: 'ended', score: { points: 6, final: false } })).toBe(10_000);
+      expect(pollIntervalFor('ended', { status: 'ended', score: { points: 6, final: true, place: 2 } })).toBe(0);
+      expect(pollIntervalFor('ended', { status: 'ended' })).toBe(0);
+    });
+  });
+
+  describe('finishedSummary', () => {
+    it('says how many checkpoints, the points, and to wait', () => {
+      const summary = finishedSummary({
+        status: 'finished',
+        progress: { completed: 3, total: 3 },
+        current: null,
+        score: { points: 6, 'in-review': 0, final: false, place: null },
+      });
+
+      expect(summary.title).toBe('All 3 checkpoints done');
+      expect(summary.lines).toEqual([
+        'Points so far: 6 pts. Lowest wins.',
+        'Wait for the moderator to finish the session. This screen moves on by itself.',
+      ]);
+    });
+
+    it('mentions a photo still in review', () => {
+      const summary = finishedSummary({ status: 'finished', progress: { completed: 3, total: 3 }, score: { points: 9, 'in-review': 1 } });
+      expect(summary.lines).toContain('A photo is still in review, which may lower your points once accepted.');
+    });
+
+    it('works without a score (an older game-server)', () => {
+      expect(finishedSummary({ status: 'finished', progress: { completed: 3, total: 3 } }).lines).toEqual([
+        'Wait for the moderator to finish the session. This screen moves on by itself.',
+      ]);
+    });
+  });
+
+  describe('sessionOverSummary', () => {
+    const stoppedAt = '2026-10-03T11:47:00Z';
+
+    it('says when the moderator finished, the final points and the place', () => {
+      const summary = sessionOverSummary({
+        status: 'ended',
+        session: { phase: 'stopped', 'stopped-at': stoppedAt },
+        score: { points: 6, 'in-review': 0, final: true, place: 2 },
+      });
+
+      expect(summary.title).toBe('The session is over');
+      expect(summary.lines).toEqual([
+        `The moderator finished the session at ${formatPlannedTime(stoppedAt)}.`,
+        'Final score: 6 points.',
+        'Your team came 2nd. Lowest wins.',
+        'Thanks for playing!',
+      ]);
+    });
+
+    it('says the result is on its way before it is final', () => {
+      const summary = sessionOverSummary({ status: 'ended', score: { points: 6, final: false } });
+      expect(summary.lines).toContain('Score: 6 points. The final result is on its way.');
+    });
+
+    it("works with today's game-server (no clock, no score)", () => {
+      expect(sessionOverSummary({ status: 'ended' }).lines).toEqual([
+        'The moderator finished the session.',
+        'Thanks for playing!',
+      ]);
     });
   });
 });
