@@ -2,6 +2,20 @@
 
 Scavenger Hunt mobile application — TypeScript web service running on Node.js.
 
+## How to play
+
+This README is for developers. Players and moderators have their own guides:
+
+- **[User guide](docs/user-guide.md)**: joining, permissions, the status
+  bar, playing a checkpoint and what to do when something goes wrong. Served
+  by the app at `/how-to-play` and linked from the Join screen.
+- **[Moderator guide](docs/moderator-guide.md)**: starting and finishing the
+  session, following the standings and announcing the winners. Served at
+  `/moderator-guide`.
+- **[Privacy notice](docs/privacy-notice.md)**: served at `/privacy`.
+
+The guides' screenshots are in `docs/images/`, served at `/images/`.
+
 ## Requirements
 
 - Node.js >= 22
@@ -376,7 +390,8 @@ src/
     challenge-logic.js  pure identity/verdict/hint logic, unit tested directly
     camera.js           camera, location and proximity code shared by /play and /challenge
     challenge.js        DOM/fetch wiring for /challenge, imports challenge-logic.js and camera.js
-docs/          player-facing docs, served at /privacy and /how-to-play
+docs/          player and moderator guides and the privacy notice, served at
+               /how-to-play, /moderator-guide and /privacy (screenshots in docs/images)
 scripts/       dev tooling (self-signed cert generation)
 tests/         Vitest suites
 ```
