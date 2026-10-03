@@ -4,6 +4,8 @@
 // *describes* what the game-server decided: no verdict, distance or window
 // logic ever runs on the phone.
 
+import { describeVerdict } from './challenge-logic.js';
+
 /**
  * @typedef {{ id: string, name?: string, location?: string, 'start-time'?: string, 'end-time'?: string }} SessionInfo
  * @typedef {{ session: SessionInfo, participant: string, team: string }} Identity
@@ -27,9 +29,18 @@
  * }} GameState
  * @typedef {'unknown' | 'denied' | 'granted'} PermissionStatus
  * @typedef {'code' | 'photo' | 'sending' | 'verdict'} CheckpointStep
- * @typedef {{ step: CheckpointStep, verdict?: 'pass' | 'pending' | 'failed' }} CheckpointProgress
+ * @typedef {{ value: string, pose: string | null, issuedAt: string, expiresAt: string }} IssuedCode
+ * @typedef {{
+ *   step: CheckpointStep,
+ *   sequence?: number,
+ *   code?: IssuedCode,
+ *   verdict?: 'pass' | 'pending' | 'failed',
+ *   display?: import('./challenge-logic.js').VerdictDisplay,
+ *   message?: string,
+ * }} CheckpointProgress
  *   Where the team is within the current checkpoint, once past the clue:
  *   a code issued, a photo taken, sending it, or a verdict back (issue #42).
+ *   `message` is a problem to show on the current screen (a failed send).
  * @typedef {{
  *   identity: Identity | null,
  *   permissions: PermissionStatus,
@@ -37,7 +48,9 @@
  *   checkpoint?: CheckpointProgress | null,
  *   offline?: boolean,
  * }} AppState
- * @typedef {'join' | 'permissions' | 'loading' | 'lobby' | 'playing' | 'finished' | 'ended'} Screen
+ * @typedef {'join' | 'permissions' | 'loading' | 'lobby'
+ *   | 'clue' | 'capture' | 'review' | 'checking' | 'verdict'
+ *   | 'finished' | 'ended'} Screen
  */
 
 /**
@@ -64,15 +77,43 @@ export function screenFor(appState) {
   if (state.session?.phase === 'stopped' || state.status === 'ended') {
     return 'ended';
   }
+  const checkpoint = appState.checkpoint;
+  // A verdict stays up until "Next clue", even though a pass has already
+  // moved the server on to the next checkpoint (or to finished).
+  if (checkpoint?.step === 'verdict' && (state.status === 'playing' || state.status === 'finished')) {
+    return 'verdict';
+  }
   switch (state.status) {
     case 'not_started':
       return 'lobby';
     case 'playing':
-      return 'playing';
+      return playingScreen(checkpoint, state.current);
     case 'finished':
       return 'finished';
     default:
       return 'loading';
+  }
+}
+
+/**
+ * @param {CheckpointProgress | null | undefined} checkpoint
+ * @param {CurrentCheckpoint | null | undefined} current
+ * @returns {Screen}
+ */
+function playingScreen(checkpoint, current) {
+  // Progress on a checkpoint the server has moved on from no longer counts.
+  if (!checkpoint || !current || checkpoint.sequence !== current.sequence) {
+    return 'clue';
+  }
+  switch (checkpoint.step) {
+    case 'code':
+      return 'capture';
+    case 'photo':
+      return 'review';
+    case 'sending':
+      return 'checking';
+    default:
+      return 'clue';
   }
 }
 
@@ -98,38 +139,30 @@ export function instructionFor(appState) {
       return 'Loading your game…';
     case 'lobby':
       return 'Waiting for the moderator to start.';
-    case 'playing':
-      return playingInstruction(appState);
+    case 'clue':
+      return appState.state?.current?.open === false
+        ? "This checkpoint isn't open yet. Check back soon."
+        : 'Solve the clue and go there. Tap "I\'m here" when you arrive.';
+    case 'capture':
+      return 'Strike the pose and take the photo.';
+    case 'review':
+      return 'Check your photo, then send it.';
+    case 'checking':
+      return 'The referee is checking your photo.';
+    case 'verdict':
+      if (appState.checkpoint?.verdict === 'pass') {
+        return 'Checkpoint done. Tap "Next clue".';
+      }
+      if (appState.checkpoint?.verdict === 'pending') {
+        return 'A moderator will check your photo. Tap "Next clue".';
+      }
+      return 'Not quite. Read why, then tap "Try again".';
     case 'finished':
       return 'All checkpoints done. Wait for the moderator.';
     case 'ended':
       return 'The session is over. Thanks for playing!';
   }
   return '';
-}
-
-/** @param {AppState} appState */
-function playingInstruction(appState) {
-  const checkpoint = appState.checkpoint;
-  switch (checkpoint?.step) {
-    case 'code':
-      return 'Strike the pose and take the photo.';
-    case 'photo':
-      return 'Check your photo, then send it.';
-    case 'sending':
-      return 'The referee is checking your photo.';
-    case 'verdict':
-      if (checkpoint.verdict === 'pass') {
-        return 'Checkpoint done. Tap "Next clue".';
-      }
-      if (checkpoint.verdict === 'pending') {
-        return 'A moderator will check your photo. Tap "Next clue".';
-      }
-      return 'Not quite. Read why, then tap "Try again".';
-  }
-  return appState.state?.current?.open === false
-    ? "This checkpoint isn't open yet. Check back soon."
-    : 'Solve the clue and go there. Tap "I\'m here" when you arrive.';
 }
 
 /**
@@ -290,7 +323,16 @@ const AMBER_UNDER_MS = 15 * 60_000;
 const RED_UNDER_MS = 5 * 60_000;
 
 /** The screens that show the status bar. */
-const STATUS_BAR_SCREENS = new Set(['lobby', 'playing', 'finished', 'ended']);
+const STATUS_BAR_SCREENS = new Set([
+  'lobby',
+  'clue',
+  'capture',
+  'review',
+  'checking',
+  'verdict',
+  'finished',
+  'ended',
+]);
 
 /**
  * @param {Screen} screen
@@ -462,6 +504,8 @@ function none() {
   return { text: '', words: '', level: 'none' };
 }
 
+const CLUE_LINE_SCREENS = new Set(['clue', 'capture', 'review', 'checking', 'verdict']);
+
 /**
  * The clue row: the current checkpoint's clue, or the phase when there's
  * no clue. Hidden on the Clue screen itself, where the clue fills the body.
@@ -473,9 +517,8 @@ export function clueLineFor(appState) {
   const screen = screenFor(appState);
   const clue = appState.state?.current?.clue;
 
-  if (screen === 'playing' && typeof clue === 'string' && clue) {
-    // The Clue screen is "playing" before a code is issued (issue #42).
-    return { text: clue, isClue: true, hidden: !appState.checkpoint };
+  if (CLUE_LINE_SCREENS.has(screen) && typeof clue === 'string' && clue) {
+    return { text: clue, isClue: true, hidden: screen === 'clue' };
   }
   const phase = {
     lobby: 'Waiting for the moderator',
@@ -496,4 +539,186 @@ export function clueLineFor(appState) {
  */
 export function clockOffsetFromState(state, receivedAt) {
   return clockOffset(state?.session?.['server-time'], receivedAt);
+}
+
+// --- playing a checkpoint (issue #42) --------------------------------------
+// Pure transitions between the Clue, Capture, Review, Checking and Verdict
+// screens. play.js does the calls; these only say where each answer leads.
+
+/**
+ * @typedef {{ checkpoint: CheckpointProgress | null, error: ErrorOutcome | null }} Transition
+ */
+
+/**
+ * After `POST /arrive` (from "I'm here", "Try again", or quietly when the
+ * code has expired). `201` and `200` both mean "show this code". A fresh
+ * code on Review keeps the photo (the team is still on Review); anywhere
+ * else it lands on Capture.
+ *
+ * @param {CheckpointProgress | null | undefined} previous
+ * @param {number} sequence the checkpoint arrived at
+ * @param {number} status
+ * @param {unknown} body
+ * @returns {Transition}
+ */
+export function checkpointAfterArrive(previous, sequence, status, body) {
+  const code = (status === 200 || status === 201) && body && typeof body === 'object' ? readIssuedCode(body) : null;
+  if (!code) {
+    return { checkpoint: previous ?? null, error: arriveError(status, body) };
+  }
+  const keepPhoto = previous?.step === 'photo' && previous.sequence === sequence;
+  return { checkpoint: { step: keepPhoto ? 'photo' : 'code', sequence, code }, error: null };
+}
+
+/**
+ * @param {object} body
+ * @returns {IssuedCode | null}
+ */
+function readIssuedCode(body) {
+  const { code, pose } = /** @type {Record<string, unknown>} */ (body);
+  if (typeof code !== 'string' || !code) {
+    return null;
+  }
+  return {
+    value: code,
+    // The pose can be null: hide it then.
+    pose: typeof pose === 'string' && pose ? pose : null,
+    issuedAt: String(/** @type {Record<string, unknown>} */ (body)['issued-at'] ?? ''),
+    expiresAt: String(/** @type {Record<string, unknown>} */ (body)['expires-at'] ?? ''),
+  };
+}
+
+/**
+ * Until issue #43 maps every `code`, an arrive that's refused stays put
+ * with a message, except where screenForError already knows better.
+ *
+ * @param {number} status
+ * @param {unknown} body
+ * @returns {ErrorOutcome}
+ */
+function arriveError(status, body) {
+  const hasCode = body && typeof body === 'object' && 'code' in body;
+  if (status === 409 && !hasCode) {
+    // e.g. "not your current checkpoint": the next state poll sorts it out.
+    return outcome(null, "Couldn't check in here just now. Please try again.");
+  }
+  if (status === 200 || status === 201) {
+    return outcome(null, 'Something went wrong. Please try again.');
+  }
+  return screenForError(status, body);
+}
+
+/**
+ * @param {CheckpointProgress} checkpoint
+ * @returns {CheckpointProgress}
+ */
+export function checkpointAfterPhoto(checkpoint) {
+  return { ...checkpoint, step: 'photo', message: undefined };
+}
+
+/**
+ * @param {CheckpointProgress} checkpoint
+ * @returns {CheckpointProgress}
+ */
+export function checkpointAfterRetake(checkpoint) {
+  return { ...checkpoint, step: 'code', message: undefined };
+}
+
+/**
+ * @param {CheckpointProgress} checkpoint
+ * @returns {CheckpointProgress}
+ */
+export function checkpointSending(checkpoint) {
+  return { ...checkpoint, step: 'sending', message: undefined };
+}
+
+/**
+ * After `POST /challenge`. A verdict body goes to the Verdict screen (pass,
+ * pending or failed, as the server decided). Anything else (a timeout, no
+ * signal, an error status) goes back to Review with the message, keeping
+ * the photo so Send can be tried again.
+ *
+ * @param {CheckpointProgress} checkpoint
+ * @param {number} status
+ * @param {string} bodyText
+ * @returns {CheckpointProgress}
+ */
+export function checkpointAfterVerdict(checkpoint, status, bodyText) {
+  const display = describeVerdict(status, bodyText);
+  if (display.variant === 'pass' || display.variant === 'failed' || display.variant === 'pending') {
+    return { ...checkpoint, step: 'verdict', verdict: display.variant, display, message: undefined };
+  }
+  const message = status === 0 ? "No connection. Your photo is kept: tap Send to try again." : display.message;
+  return { ...checkpoint, step: 'photo', message };
+}
+
+/**
+ * Whether the issued code has run out, by server time. The code isn't
+ * checked by the referee yet (decided 2 Oct), but an expired one is still
+ * swapped for a fresh one before sending.
+ *
+ * @param {CheckpointProgress | null | undefined} checkpoint
+ * @param {number} serverNow
+ * @returns {boolean}
+ */
+export function codeExpired(checkpoint, serverNow) {
+  const expiresAt = Date.parse(checkpoint?.code?.expiresAt ?? '');
+  return Number.isFinite(expiresAt) && Number.isFinite(serverNow) && serverNow >= expiresAt;
+}
+
+/**
+ * The code's countdown, e.g. "9:41 left", or '' with no known expiry.
+ *
+ * @param {CheckpointProgress | null | undefined} checkpoint
+ * @param {number} serverNow
+ * @returns {string}
+ */
+export function codeTimeLeft(checkpoint, serverNow) {
+  const expiresAt = Date.parse(checkpoint?.code?.expiresAt ?? '');
+  if (!Number.isFinite(expiresAt) || !Number.isFinite(serverNow)) {
+    return '';
+  }
+  return `${formatCountdown(expiresAt - serverNow)} left`;
+}
+
+/**
+ * The Verdict screen's heading. Words and a symbol, never colour alone.
+ *
+ * @param {CheckpointProgress | null | undefined} checkpoint
+ * @returns {string}
+ */
+export function verdictHeading(checkpoint) {
+  switch (checkpoint?.verdict) {
+    case 'pass':
+      return '✓ Checkpoint done';
+    case 'pending':
+      return '? In review';
+    case 'failed':
+      return '✗ Not quite';
+    default:
+      return '';
+  }
+}
+
+/**
+ * How often to poll `/state` on each screen, in ms, or 0 for not at all:
+ * every 10 s while waiting (lobby, clue), every 30 s on Capture and Review
+ * so a stop is noticed without draining the battery, and not while a photo
+ * is being checked or a verdict is up.
+ *
+ * @param {Screen} screen
+ * @returns {number}
+ */
+export function pollIntervalFor(screen) {
+  switch (screen) {
+    case 'loading':
+    case 'lobby':
+    case 'clue':
+      return 10_000;
+    case 'capture':
+    case 'review':
+      return 30_000;
+    default:
+      return 0;
+  }
 }
