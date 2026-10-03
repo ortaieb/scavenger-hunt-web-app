@@ -715,6 +715,35 @@ button:disabled {
   margin: 2rem 0;
 }
 
+/* Screenshots in the guides: phone screens, kept to a phone's width. */
+.doc img {
+  display: block;
+  max-width: min(100%, 22rem);
+  height: auto;
+  margin: 1rem 0;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+}
+
+.doc table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.doc th,
+.doc td {
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.doc code {
+  overflow-wrap: anywhere;
+}
+
 .doc-back {
   display: inline-flex;
   align-items: center;
