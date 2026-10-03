@@ -59,13 +59,51 @@ describe('fetchWithTimeout', () => {
   });
 });
 
-describe('GET /', () => {
-  it('returns "hello, world!" as plain text', async () => {
-    const response = await request(createApp(testConfig)).get('/');
+describe.each(['/', '/play'])('GET %s', (path) => {
+  it('serves the participant app', async () => {
+    const response = await request(createApp(testConfig)).get(path);
 
     expect(response.status).toBe(200);
-    expect(response.headers['content-type']).toMatch(/^text\/plain/);
-    expect(response.text).toBe('hello, world!');
+    expect(response.headers['content-type']).toMatch(/^text\/html/);
+    expect(response.text).toContain('<script type="module" src="/play.js"></script>');
+  });
+
+  it('asks for consent with a box that starts unticked, using the game-server\'s wording', async () => {
+    const response = await request(createApp(testConfig)).get(path);
+
+    expect(response.text).toMatch(/<input id="consent" type="checkbox" \/>/);
+    expect(response.text.replace(/\s+/g, ' ')).toContain(
+      'I agree to my photos and checkpoint locations being used as described to verify my progress in this game.',
+    );
+  });
+});
+
+describe.each(['/play.js', '/play.css', '/api.js', '/game-logic.js'])('GET %s', (asset) => {
+  it('is served', async () => {
+    const response = await request(createApp(testConfig)).get(asset);
+
+    expect(response.status).toBe(200);
+  });
+});
+
+describe('GET /privacy', () => {
+  it('renders the privacy notice as HTML, without the notes for whoever fills it in', async () => {
+    const response = await request(createApp(testConfig)).get('/privacy');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toMatch(/^text\/html/);
+    expect(response.text).toContain('<h2>Full privacy notice</h2>');
+    expect(response.text).toContain('href="/play.css"');
+    expect(response.text).not.toContain('Before publishing');
+  });
+});
+
+describe('GET /how-to-play', () => {
+  it('renders the user guide as HTML', async () => {
+    const response = await request(createApp(testConfig)).get('/how-to-play');
+
+    expect(response.status).toBe(200);
+    expect(response.text).toContain('<h1>How to play</h1>');
   });
 });
 

@@ -1,6 +1,8 @@
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type Express, type Request, type Response as ExpressResponse } from 'express';
+import { marked } from 'marked';
 import multer from 'multer';
 import type { Config } from './config.ts';
 
@@ -9,6 +11,10 @@ import type { Config } from './config.ts';
 // alongside the compiled `dist/app.js`.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
+// The player-facing docs live in the repo's `docs/` (see issue #40): one
+// level up from both `src/` and `dist/`, and copied into the Docker image
+// alongside `dist/`.
+const docsDir = path.join(__dirname, '..', 'docs');
 
 export type AppConfig = Pick<Config, 'gameServerUrl' | 'gameServerTimeoutMs'>;
 
@@ -40,6 +46,47 @@ function parseCheckpoint(value: string | undefined): number | undefined {
 /** Like parseCheckpoint, but for a value already parsed from a JSON body. */
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1;
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
+}
+
+/**
+ * Renders one of our own Markdown docs as a phone-friendly page, styled
+ * like /play. HTML comments (notes to whoever fills in the doc) are
+ * dropped. Read and rendered once, on first request.
+ */
+function markdownPage(file: string, title: string): () => Promise<string> {
+  let page: Promise<string> | undefined;
+  return () => {
+    page ??= readFile(path.join(docsDir, file), 'utf8')
+      .then((markdown) => marked.parse(markdown.replace(/<!--[\s\S]*?-->/g, ''), { async: false }))
+      .then(
+        (body) => `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>${escapeHtml(title)} — Scavenger Hunt</title>
+    <link rel="stylesheet" href="/play.css" />
+  </head>
+  <body>
+    <main class="doc">
+      <a class="doc-back" href="/play">‹ Back to the game</a>
+${body}
+    </main>
+  </body>
+</html>
+`,
+      )
+      .catch((err: unknown) => {
+        // Don't cache a failure: try again on the next request.
+        page = undefined;
+        throw err;
+      });
+    return page;
+  };
 }
 
 function describeError(err: unknown): string {
@@ -78,8 +125,22 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
 
   app.disable('x-powered-by');
 
-  app.get('/', (_req: Request, res: ExpressResponse) => {
-    res.type('text/plain').send('hello, world!');
+  // The participant app (see issue #40) is the front door: `/` and `/play`
+  // both serve it.
+  const sendPlay = (_req: Request, res: ExpressResponse) => {
+    res.sendFile(path.join(publicDir, 'play.html'));
+  };
+  app.get('/', sendPlay);
+  app.get('/play', sendPlay);
+
+  const privacyPage = markdownPage('privacy-notice.md', 'Your photos and privacy');
+  app.get('/privacy', async (_req: Request, res: ExpressResponse) => {
+    res.type('html').send(await privacyPage());
+  });
+
+  const userGuidePage = markdownPage('user-guide.md', 'How to play');
+  app.get('/how-to-play', async (_req: Request, res: ExpressResponse) => {
+    res.type('html').send(await userGuidePage());
   });
 
   // Liveness signal for the deployment platform (Railway — see issue #24)
