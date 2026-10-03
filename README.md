@@ -14,14 +14,47 @@ npm install
 npm run dev        # watch mode, http://localhost:3000
 ```
 
-`GET /` responds with `hello, world!` as plain text.
+`GET /` and `GET /play` serve the participant app (see [/play](#play) below).
 
 `GET /health` responds `200 {"status":"ok"}` — a liveness signal for the
 deployment platform, not a dependency check: it never calls the game-server,
 so a blip there doesn't make this app look unhealthy and get cycled for no
 reason.
 
+### /play
+
+The participant app (issue #40): one page that always shows the screen for
+where the team stands, recomputed from what's stored on the phone and the
+latest `GET /state`, so a reload, a locked screen or lost signal lands back
+on the right screen.
+
+| Screen | Shown when |
+| --- | --- |
+| Join | No stored identity: team code (upper-cased as typed), the photo privacy summary, an **unticked** consent box, links to the privacy notice and "How to play" |
+| Permissions | After join, until camera and location have been granted once: explains why, then asks for the camera, then location, on one tap; if refused, steps for iPhone Safari and Android Chrome, then Try again |
+| Lobby | `status: not_started`: team, session name, area and planned start; polls `GET /state` every 10 s (at once when the page becomes visible again, never while hidden) |
+| Clue, Finished, Session over | Placeholders until issues #42 and #43 |
+
+Join stays disabled until the box is ticked, so `consent: true` is only
+ever the player's own tick. The join response's `{session, participant,
+team}` is kept in `localStorage` (read and written inside try/catch, as
+private browsing can throw); **Leave this game** in the menu clears it.
+
+The page is split like `/challenge`: `play.js` is DOM wiring only, `api.js`
+calls this app's relays with a timeout, and `game-logic.js` holds the pure
+logic (`screenFor`, `instructionFor`, `formatCountdown`, `clockOffset`,
+`screenForError`), unit-tested with Vitest. The app only describes what the
+game-server decided: no verdict, distance or time-window logic on the phone.
+
+`GET /privacy` renders [`docs/privacy-notice.md`](docs/privacy-notice.md)
+and `GET /how-to-play` renders [`docs/user-guide.md`](docs/user-guide.md)
+(a stub until issue #45). **The privacy notice still has `[placeholders]`,
+which must be filled in before real players use the game.**
+
 ### /challenge
+
+A developer tool, kept until there's authentication; players use `/play`.
+
 
 `GET /challenge?checkpoint=<int>` serves an in-app photo + location capture
 page. There's no join flow yet, so **Session ID** and **Participant ID** are
@@ -257,9 +290,13 @@ src/
   app.ts       Express app factory and routes
   config.ts    environment parsing and validation
   server.ts    HTTP/HTTPS server construction
-  public/      static assets for /challenge (html, css, client js)
+  public/      static assets for /play and /challenge (html, css, client js)
+    game-logic.js       pure screen/instruction/error logic for /play, unit tested directly
+    api.js              /play's calls to this app's relays, with timeouts
+    play.js             /play's DOM/permissions/polling wiring
     challenge-logic.js  pure identity/verdict/hint logic, unit tested directly
     challenge.js        DOM/camera/fetch wiring, imports challenge-logic.js
+docs/          player-facing docs, served at /privacy and /how-to-play
 scripts/       dev tooling (self-signed cert generation)
 tests/         Vitest suites
 ```
