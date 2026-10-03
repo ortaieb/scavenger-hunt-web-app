@@ -33,6 +33,8 @@ ENV NODE_ENV=production PORT=3000 HOST=0.0.0.0
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+# The player-facing docs, rendered at /privacy and /how-to-play (issue #40).
+COPY docs ./docs
 
 EXPOSE 3000
 # The distroless image already runs as the unprivileged `nonroot` user (65532).
