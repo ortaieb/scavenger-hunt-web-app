@@ -53,7 +53,7 @@ const VALID_PARTICIPANT = '22222222-2222-4222-8222-222222222222';
  */
 function verdictBody(checkpoint: Record<string, unknown>): string {
   return JSON.stringify({
-    verdict: { game: 'hunt-1', participant: VALID_PARTICIPANT, checkpoint },
+    verdict: { game: 'hunt-1', participant: VALID_PARTICIPANT, checkpoint: { time: '2026-10-03T10:00:00Z', ...checkpoint } },
     image_id: 'img-1',
   });
 }
@@ -64,7 +64,7 @@ describe('describeVerdict', () => {
       sequence: 2,
       attempt: 3,
       verdict: 'pass',
-      checks: [{ name: 'window_open', outcome: 'passed', confidence: 1, reason: 'On time.' }],
+      checks: [{ check: 'window_open', outcome: 'passed', confidence: 1, reason: 'On time.' }],
       rejections: [],
     });
 
@@ -85,7 +85,7 @@ describe('describeVerdict', () => {
       sequence: 2,
       attempt: 2,
       verdict: 'failed',
-      checks: [{ name: 'window_open', outcome: 'failed', confidence: 1, reason: 'Too late.' }],
+      checks: [{ check: 'window_open', outcome: 'failed', confidence: 1, reason: 'Too late.' }],
       rejections: [
         { code: 'outside_window', message: 'Submitted after the checkpoint window closed.' },
         { code: 'too_far', message: 'You were too far from the checkpoint.' },
@@ -108,8 +108,8 @@ describe('describeVerdict', () => {
       attempt: 1,
       verdict: 'pending',
       checks: [
-        { name: 'window_open', outcome: 'passed', confidence: 1, reason: 'On time.' },
-        { name: 'scene_matches', outcome: 'uncertain', confidence: 0.4, reason: 'Could not confidently match the scene.' },
+        { check: 'window_open', outcome: 'passed', confidence: 1, reason: 'On time.' },
+        { check: 'scene_matches', outcome: 'uncertain', confidence: 0.4, reason: 'Could not confidently match the scene.' },
       ],
       rejections: [],
     });
@@ -157,8 +157,8 @@ describe('describeVerdict', () => {
         attempt: 1,
         verdict: 'pending',
         checks: [
-          { name: 'photo_unique', outcome: 'skipped', confidence: 0, reason: 'Not checked this attempt.' },
-          { name: 'some_new_check', outcome: 'passed', confidence: 1, reason: 'Looks fine.' },
+          { check: 'photo_unique', outcome: 'skipped', confidence: 0, reason: 'Not checked this attempt.' },
+          { check: 'some_new_check', outcome: 'passed', confidence: 1, reason: 'Looks fine.' },
         ],
         rejections: [],
       });
@@ -177,13 +177,14 @@ describe('describeVerdict', () => {
         ['photo_unique', 'New photo'],
         ['scene_matches', 'Right place'],
         ['pose_correct', 'Right pose'],
+        ['session_running', 'Session running'],
       ] as const;
 
       const body = verdictBody({
         sequence: 1,
         attempt: 1,
         verdict: 'pending',
-        checks: names.map(([name]) => ({ name, outcome: 'passed', confidence: 1, reason: 'ok' })),
+        checks: names.map(([name]) => ({ check: name, outcome: 'passed', confidence: 1, reason: 'ok' })),
         rejections: [],
       });
 
@@ -191,6 +192,59 @@ describe('describeVerdict', () => {
 
       expect(result.checklist.map((item) => item.label)).toEqual(names.map(([, label]) => label));
     });
+  });
+
+  it('labels every check in a real POST /challenge response body', () => {
+    // Verbatim shape of a game-server response: each check's name is in
+    // `check`, not `name` — reading `name` labelled every row "Check".
+    const body = JSON.stringify({
+      verdict: {
+        game: 'hunt-1',
+        participant: VALID_PARTICIPANT,
+        checkpoint: {
+          sequence: 1,
+          attempt: 1,
+          time: '2026-10-03T10:00:00Z',
+          verdict: 'pass',
+          checks: [
+            { check: 'window_open', outcome: 'passed', confidence: 1.0, reason: 'The checkpoint is open.' },
+            { check: 'capture_fresh', outcome: 'passed', confidence: 1.0, reason: 'Photo taken just now.' },
+            { check: 'capture_time_plausible', outcome: 'passed', confidence: 1.0, reason: 'Photo time is plausible.' },
+            { check: 'in_range', outcome: 'passed', confidence: 1.0, reason: "Within the checkpoint's area." },
+            { check: 'photo_unique', outcome: 'passed', confidence: 1.0, reason: 'Not seen before.' },
+            { check: 'scene_matches', outcome: 'passed', confidence: 0.9, reason: 'Scene matches.' },
+            { check: 'pose_correct', outcome: 'passed', confidence: 0.9, reason: 'Pose matches.' },
+          ],
+          rejections: [],
+        },
+      },
+      image_id: 'img-1',
+    });
+
+    const result = describeVerdict(200, body);
+
+    expect(result.checklist.map((item) => item.label)).toEqual([
+      'Checkpoint open',
+      'Photo is recent',
+      'Photo time',
+      'Location',
+      'New photo',
+      'Right place',
+      'Right pose',
+    ]);
+    expect(result.checklist).toContainEqual({ icon: '✓', label: 'Location', reason: "Within the checkpoint's area." });
+  });
+
+  it('still reads a check named in `name` (an older body)', () => {
+    const body = verdictBody({
+      sequence: 1,
+      attempt: 1,
+      verdict: 'pass',
+      checks: [{ name: 'in_range', outcome: 'passed', confidence: 1, reason: 'ok' }],
+      rejections: [],
+    });
+
+    expect(describeVerdict(200, body).checklist.map((item) => item.label)).toEqual(['Location']);
   });
 
   it('describes a 504 with a clear "took too long" message', () => {
