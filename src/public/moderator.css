@@ -1,0 +1,176 @@
+/* The moderator screen at /moderator (issue #44). Builds on play.css (its
+   colours, buttons and messages) and works from a phone up to a laptop. */
+
+.moderator {
+  width: 100%;
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 1rem calc(1rem + var(--safe-right)) calc(2rem + var(--safe-bottom)) calc(1rem + var(--safe-left));
+  display: grid;
+  gap: 1rem;
+}
+
+.moderator #dashboard {
+  display: grid;
+  gap: 1rem;
+}
+
+.moderator #dashboard[hidden],
+.panel[hidden] {
+  display: none;
+}
+
+.panel {
+  padding: 1rem;
+  border-radius: 0.75rem;
+  background: var(--surface);
+}
+
+.panel h1,
+.panel h2 {
+  margin-top: 0;
+}
+
+.panel form {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.sign-out {
+  width: auto;
+  min-height: 44px;
+  padding: 0 0.9rem;
+}
+
+.sign-out[hidden] {
+  display: none;
+}
+
+/* The badge carries its meaning in words; the colour only repeats it. */
+.phase-badge {
+  display: inline-block;
+  margin: 0 0 0.4rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-weight: 700;
+  border: 2px solid var(--border);
+}
+
+.phase-badge::before {
+  content: '○ ';
+}
+
+.phase-badge--running {
+  border-color: #4ade80;
+  color: #bbf7d0;
+}
+
+.phase-badge--running::before {
+  content: '● ';
+}
+
+.phase-badge--late {
+  border-color: var(--warning-text);
+  color: var(--warning-text);
+}
+
+.phase-badge--late::before {
+  content: '● ';
+}
+
+.phase-badge--finished::before {
+  content: '■ ';
+}
+
+.phase-countdown {
+  margin: 0;
+  font-size: 1.2rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.phase-times {
+  margin: 0.25rem 0 1rem;
+}
+
+.session-panel button {
+  margin-top: 0.5rem;
+}
+
+.session-panel button[hidden] {
+  display: none;
+}
+
+.button-warning {
+  background: #b91c1c;
+  color: #ffffff;
+}
+
+.standings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.standings li {
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.6rem;
+  background: var(--bg);
+}
+
+.team-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.team-name {
+  font-weight: 700;
+  margin-right: auto;
+}
+
+.team-place {
+  font-weight: 700;
+}
+
+.team-place::after {
+  content: ' ·';
+}
+
+.team-meta,
+.team-last {
+  display: block;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.team--not-joined .team-name {
+  color: var(--muted);
+}
+
+.blocked {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.3rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.blocked-time {
+  display: inline-block;
+  min-width: 3.5em;
+  color: var(--muted);
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.confirm-actions .button-secondary {
+  flex: 0 0 38%;
+}

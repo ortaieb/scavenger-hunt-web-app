@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#111318" />
+    <!-- The moderator code is never put in a URL; don't leak this one either. -->
+    <meta name="referrer" content="no-referrer" />
+    <title>Scavenger Hunt — Moderator</title>
+    <link rel="stylesheet" href="/play.css" />
+    <link rel="stylesheet" href="/moderator.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="app-bar">
+        <span class="app-name">Scavenger Hunt · Moderator</span>
+        <button id="sign-out" type="button" class="button-secondary sign-out" hidden>Forget code</button>
+      </div>
+      <div id="connection" class="message message--warning connection" role="status" hidden>
+        <span id="connection-text"></span>
+      </div>
+    </header>
+
+    <main class="moderator">
+      <!-- No session in the link -->
+      <section id="no-session" class="panel" hidden>
+        <h1>Moderator</h1>
+        <p>
+          Open the moderator link for your session: <code>/moderator?session=&lt;session id&gt;</code>.
+        </p>
+      </section>
+
+      <!-- Sign in: the code is typed once and kept for this tab only. -->
+      <section id="sign-in" class="panel" hidden>
+        <h1>Moderator sign-in</h1>
+        <!-- POST, so even without JavaScript the code never lands in a URL. -->
+        <form id="sign-in-form" method="post" action="/moderator/sign-in" novalidate>
+          <label for="moderator-code" class="field-label">Moderator code</label>
+          <input
+            id="moderator-code"
+            name="code"
+            type="password"
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            required
+          />
+          <p class="note">Kept only in this tab, and forgotten when it closes.</p>
+          <p id="sign-in-error" class="message message--error" role="alert" hidden></p>
+          <button id="sign-in-button" type="submit">Sign in</button>
+        </form>
+      </section>
+
+      <!-- The session -->
+      <div id="dashboard" hidden>
+        <section class="panel session-panel" aria-labelledby="session-title">
+          <h1 id="session-title">Session</h1>
+          <p id="phase-badge" class="phase-badge" role="status"></p>
+          <p id="phase-countdown" class="phase-countdown"></p>
+          <p id="phase-times" class="note phase-times"></p>
+          <p id="action-error" class="message message--error" role="alert" hidden></p>
+          <button id="start-button" type="button" hidden>Start session</button>
+          <button id="finish-button" type="button" class="button-warning" hidden>Finish session now</button>
+        </section>
+
+        <section class="panel" aria-labelledby="standings-title">
+          <h2 id="standings-title">Standings, lowest points first</h2>
+          <p id="standings-final" class="note" hidden>Final standings: ready to announce the winners.</p>
+          <ol id="standings" class="standings"></ol>
+        </section>
+
+        <section class="panel" aria-labelledby="blocked-title">
+          <h2 id="blocked-title">Blocked outside the session</h2>
+          <ul id="blocked" class="blocked"></ul>
+          <p id="blocked-empty" class="note">Nobody has tried yet.</p>
+        </section>
+      </div>
+    </main>
+
+    <dialog id="confirm" class="sheet" aria-labelledby="confirm-title">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-text"></p>
+      <form method="dialog" class="confirm-actions">
+        <button value="cancel" type="submit" class="button-secondary">Cancel</button>
+        <button id="confirm-ok" value="ok" type="submit"></button>
+      </form>
+    </dialog>
+
+    <script type="module" src="/moderator.js"></script>
+  </body>
+</html>

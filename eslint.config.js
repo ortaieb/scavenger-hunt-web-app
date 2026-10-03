@@ -43,6 +43,7 @@ export default tseslint.config(
         clearInterval: 'readonly',
         crypto: 'readonly',
         localStorage: 'readonly',
+        sessionStorage: 'readonly',
         console: 'readonly',
       },
     },
