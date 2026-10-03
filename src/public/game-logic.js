@@ -847,6 +847,6 @@ export function sessionOverSummary(state) {
       lines.push(`Score: ${score.points} ${unit}. The final result is on its way.`);
     }
   }
-  lines.push('Thanks for playing!');
+  // "Thanks for playing!" is already the screen's instruction line.
   return { title: 'The session is over', lines };
 }

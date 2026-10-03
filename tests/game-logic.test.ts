@@ -872,7 +872,6 @@ describe('finished, session over and errors (issue #43)', () => {
         `The moderator finished the session at ${formatPlannedTime(stoppedAt)}.`,
         'Final score: 6 points.',
         'Your team came 2nd. Lowest wins.',
-        'Thanks for playing!',
       ]);
     });
 
@@ -882,10 +881,7 @@ describe('finished, session over and errors (issue #43)', () => {
     });
 
     it("works with today's game-server (no clock, no score)", () => {
-      expect(sessionOverSummary({ status: 'ended' }).lines).toEqual([
-        'The moderator finished the session.',
-        'Thanks for playing!',
-      ]);
+      expect(sessionOverSummary({ status: 'ended' }).lines).toEqual(['The moderator finished the session.']);
     });
   });
 });
