@@ -10,8 +10,8 @@ This README is for developers. Players and moderators have their own guides:
   bar, playing a checkpoint and what to do when something goes wrong. Served
   by the app at `/how-to-play` and linked from the Join screen.
 - **[Moderator guide](docs/moderator-guide.md)**: starting and finishing the
-  session, following the standings and announcing the winners. Served at
-  `/moderator-guide`.
+  session, following the standings, reviewing photos and announcing the
+  winners. Served at `/moderator-guide`.
 - **[Privacy notice](docs/privacy-notice.md)**: served at `/privacy`.
 
 The guides' screenshots are in `docs/images/`, served at `/images/`.
@@ -287,25 +287,50 @@ kept in `sessionStorage` (so it goes when the tab closes) and sent only as
 never logged. A `401` says "That code isn't right for this session." and
 asks again.
 
+- **All teams have finished**: a banner once every joined team has
+  completed its route while the session runs, adding "Review the photos
+  below, then finish the session." when photos are waiting (issue #55).
+- **To review (n)**, at the top while there's anything in it (issue #55):
+  each photo the referee couldn't decide, oldest first, with the team,
+  checkpoint, attempt and how long ago it was sent; the player's photo,
+  large; the reference photos as thumbnails (tap to enlarge); **Asked:**
+  the pose and **Place:** the scene; and the checks with outcome,
+  confidence and the moderator-only `detail` (the referee's reasons), or,
+  if the referee errored (e.g. `deadline`), that instead. **Approve** and
+  **Reject**, with an optional note, and no confirmation; disabled while
+  the ruling is saved.
 - **Phase badge**: Not started, Running or Finished, with the planned and
   actual times and the countdown to the planned end; once that passes,
   "Running, past planned end" as a reminder to finish.
 - **Start session** (not started only, at any time) and **Finish session
   now** (running only, in the warning colour), each after a confirmation.
+  With photos in review, Finish's adds "n photos are still in review.
+  Results won't be final until you've decided them."
 - **Standings**, lowest points first: joined or not, checkpoints completed,
   points, photos in review, the current checkpoint, and the last one
   completed with how long ago it was approved, to spot a team that's stuck.
-  After the finish they're final, with places.
+  After the finish they're final, with places; while photos are still in
+  review, "Waiting for n reviews" instead.
+- **Recently decided**: the latest rulings (the review's `recent`), newest
+  first, with **Change** on each to rule again.
 - **Blocked outside the session**: newest first, up to 50 (time, team, what
   they tried and why).
-- Refreshes the overview every 5 s while the page is visible. Shows
-  checkpoint numbers and names, never clues, locations or photos.
+- Refreshes the overview and the review queue every 5 s while the page is
+  visible. Shows checkpoint numbers and names, never clues or locations.
+
+Photos need the `Authorization` header, which an `<img src>` can't send:
+the page fetches each one through its relay with the header and shows it
+through an object URL, revoked when it leaves the screen (a ruled photo,
+a closed **Change**, or signing out). Cards are kept across polls, so a
+note being typed keeps its text and focus. No photo, note, `detail` text or
+moderator code is written to `localStorage` or logged. A `401` from any
+relay, photos included, asks for the code again.
 
 The pure logic is in `moderator-logic.js`, unit-tested like `game-logic.js`.
 
-### Moderator relays: /moderator/start, /moderator/stop, /moderator/overview
+### Moderator relays
 
-Three relays for the moderator screen (issue #39), following the same
+Relays for the moderator screen (issues #39 and #55), following the same
 pattern as the game-loop relays above: `fetchWithTimeout` with
 `GAME_SERVER_TIMEOUT_MS` (`504` on a timeout, `502` when the game-server
 can't be reached), otherwise the upstream status, content type and body
@@ -316,9 +341,19 @@ unchanged.
 | `POST /moderator/start` | `POST ${GAME_SERVER_URL}/sessions/{session}/start` | `{"session": "<uuid>"}` |
 | `POST /moderator/stop` | `POST ${GAME_SERVER_URL}/sessions/{session}/stop` | `{"session": "<uuid>"}` |
 | `GET /moderator/overview?session=<uuid>` | `GET ${GAME_SERVER_URL}/sessions/{session}/overview` | none |
+| `GET /moderator/review?session=<uuid>` | `GET ${GAME_SERVER_URL}/sessions/{session}/review` | none |
+| `POST /moderator/ruling` | `POST ${GAME_SERVER_URL}/sessions/{session}/submissions/{submission}/ruling` | `{"session", "submission", "ruling", "note"}` |
+| `GET /moderator/photo?session=<uuid>&submission=<int>` | `GET ${GAME_SERVER_URL}/sessions/{session}/submissions/{submission}/photo` | none |
+| `GET /moderator/reference-photo?session=<uuid>&checkpoint=<int>&position=<int>` | `GET ${GAME_SERVER_URL}/sessions/{session}/checkpoints/{sequence}/reference-photos/{position}` | none |
 
-`session` must be a UUID (`400` otherwise, nothing sent upstream). Start
-and stop send **no body** upstream — the session is in the path.
+`session` must be a UUID, `submission` and `checkpoint` integers >= 1, and
+`position` an integer >= 0 (`400` otherwise, nothing sent upstream). Start
+and stop send **no body** upstream — the session is in the path. The
+ruling sends upstream only `{"ruling", "note"}`, as given: the game-server
+alone decides whether they're valid (`422` otherwise), and the note, which
+may describe the photo, is never logged. The two photo relays stream the
+JPEG back with `Cache-Control: no-store`, so neither the browser nor a
+proxy keeps a copy.
 
 The moderator code travels in the **`Authorization` header**, which is
 forwarded unchanged. It is **never logged**, and never added or defaulted:
@@ -334,6 +369,15 @@ with the session clock: `{"phase", "planned-start", "planned-end",
 <the clock>, "teams": [...], "blocked": [...]}` — standings, each team's
 last completed and current checkpoint, and the newest attempts refused for
 being outside the session.
+
+The review answers `{"to-review": [...], "recent": [...]}`: the photos
+waiting for a ruling, oldest first, each with its `submission`, team,
+checkpoint, attempt, `received-at`, `pose`, `scene`, the number of
+`reference-photos`, its `checks` (with the moderator-only `detail`) and how
+the `referee` call went; then the last 20 rulings. A ruling answers `201`
+for a photo's first ruling and `200` for a change, with `{"submission",
+"verdict", "ruling", "effective-verdict"}`; otherwise `404` for an unknown
+session or submission, or `422`.
 
 The game-loop relays forward bodies verbatim, so the game-server's newer
 fields (`session` and `score` in `/state`, `code` in error bodies) pass
@@ -383,8 +427,8 @@ src/
   server.ts    HTTP/HTTPS server construction
   public/      static assets for /play and /challenge (html, css, client js)
     game-logic.js       pure screen/instruction/error logic for /play, unit tested directly
-    moderator-logic.js  pure phase/standings/blocked logic for /moderator, unit tested directly
-    moderator.js        /moderator's DOM, sign-in and polling wiring
+    moderator-logic.js  pure phase/standings/blocked/review logic for /moderator, unit tested directly
+    moderator.js        /moderator's DOM, sign-in, polling, photo and ruling wiring
     api.js              /play's calls to this app's relays, with timeouts
     play.js             /play's DOM/permissions/polling wiring
     challenge-logic.js  pure identity/verdict/hint logic, unit tested directly

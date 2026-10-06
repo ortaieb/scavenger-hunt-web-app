@@ -1,5 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { fileURLToPath } from 'node:url';
 import express, { type Express, type Request, type Response as ExpressResponse } from 'express';
 import { marked } from 'marked';
@@ -34,13 +37,18 @@ function isValidUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID_RE.test(value);
 }
 
-/** Returns the checkpoint number, or undefined if it isn't an integer >= 1. */
-function parseCheckpoint(value: string | undefined): number | undefined {
-  if (value === undefined) {
+/** Returns the number, or undefined if it isn't an integer >= min. */
+function parseInteger(value: unknown, min: number): number | undefined {
+  if (typeof value !== 'string' || value.trim() === '') {
     return undefined;
   }
-  const checkpoint = Number(value);
-  return Number.isInteger(checkpoint) && checkpoint >= 1 ? checkpoint : undefined;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= min ? number : undefined;
+}
+
+/** Returns the checkpoint number, or undefined if it isn't an integer >= 1. */
+function parseCheckpoint(value: string | undefined): number | undefined {
+  return parseInteger(value, 1);
 }
 
 /** Like parseCheckpoint, but for a value already parsed from a JSON body. */
@@ -437,40 +445,53 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     }
   });
 
-  // Relays the moderator's session controls and overview, for the same
-  // HTTPS/CORS reasons as the other relays (see issue #39). The moderator
-  // code travels in the Authorization header: forwarded unchanged when
-  // present, never added or defaulted when missing (so the game-server
-  // answers 401 itself), and never logged.
+  // Relays the moderator's session controls, overview, review queue,
+  // rulings and photos, for the same HTTPS/CORS reasons as the other relays
+  // (see issues #39 and #55). Each route validates what goes into the
+  // upstream path (400 otherwise, nothing sent upstream). The moderator code
+  // travels in the Authorization header: forwarded unchanged when present,
+  // never added or defaulted when missing (so the game-server answers 401
+  // itself), and never logged.
   async function relayModerator(
     req: Request,
     res: ExpressResponse,
-    session: unknown,
-    action: 'start' | 'stop' | 'overview',
+    upstreamPath: string,
+    { method = 'GET', body, photo = false }: { method?: 'GET' | 'POST'; body?: unknown; photo?: boolean } = {},
   ): Promise<void> {
-    if (!isValidUuid(session)) {
-      res.status(400).json({ error: 'session must be a valid UUID' });
-      return;
+    const authorization = req.get('authorization');
+    const headers: Record<string, string> = authorization === undefined ? {} : { authorization };
+    if (body !== undefined) {
+      headers['content-type'] = 'application/json';
     }
 
-    const authorization = req.get('authorization');
     try {
-      // Start and stop carry no body upstream: the session is in the path.
       const upstream = await fetchWithTimeout(
         doFetch,
-        new URL(`/sessions/${encodeURIComponent(session)}/${action}`, config.gameServerUrl),
-        {
-          method: action === 'overview' ? 'GET' : 'POST',
-          headers: authorization === undefined ? {} : { authorization },
-        },
+        new URL(upstreamPath, config.gameServerUrl),
+        { method, headers, body: body === undefined ? undefined : JSON.stringify(body) },
         config.gameServerTimeoutMs,
       );
-      const body = await upstream.text();
-      res
-        .status(upstream.status)
-        .type(upstream.headers.get('content-type') ?? 'application/json')
-        .send(body);
+      res.status(upstream.status).type(upstream.headers.get('content-type') ?? 'application/json');
+      if (!photo) {
+        res.send(await upstream.text());
+        return;
+      }
+      // A player's photo, or a reference photo that can show the answer to
+      // a clue: streamed straight through, never kept here, and never by
+      // the browser or a proxy either.
+      res.set('cache-control', 'no-store');
+      if (upstream.body) {
+        await pipeline(Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>), res);
+      } else {
+        res.end();
+      }
     } catch (err) {
+      if (res.headersSent || res.destroyed) {
+        // The photo was already on its way when the game-server or the
+        // browser went away: there's nothing left to answer.
+        res.destroy();
+        return;
+      }
       if (err instanceof Error && err.name === 'AbortError') {
         res.status(504).json({ error: 'The game server took too long to respond' });
         return;
@@ -479,16 +500,85 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     }
   }
 
-  app.post('/moderator/start', express.json(), async (req: Request, res: ExpressResponse) => {
-    await relayModerator(req, res, (req.body as Record<string, unknown> | undefined)?.session, 'start');
+  const sessionPath = (session: string) => `/sessions/${encodeURIComponent(session)}`;
+
+  // Start and stop carry no body upstream: the session is in the path.
+  for (const action of ['start', 'stop'] as const) {
+    app.post(`/moderator/${action}`, express.json(), async (req: Request, res: ExpressResponse) => {
+      const { session } = (req.body ?? {}) as Record<string, unknown>;
+      if (!isValidUuid(session)) {
+        res.status(400).json({ error: 'session must be a valid UUID' });
+        return;
+      }
+      await relayModerator(req, res, `${sessionPath(session)}/${action}`, { method: 'POST' });
+    });
+  }
+
+  // The overview and the review queue (photos waiting for a ruling, and
+  // the latest rulings) are read the same way.
+  for (const view of ['overview', 'review'] as const) {
+    app.get(`/moderator/${view}`, async (req: Request, res: ExpressResponse) => {
+      const { session } = req.query;
+      if (!isValidUuid(session)) {
+        res.status(400).json({ error: 'session must be a valid UUID' });
+        return;
+      }
+      await relayModerator(req, res, `${sessionPath(session)}/${view}`);
+    });
+  }
+
+  // Approves or rejects a photo. Only { ruling, note } go upstream, as
+  // sent: the game-server alone decides whether they're valid. The note may
+  // describe the photo, so it's never logged either.
+  app.post('/moderator/ruling', express.json(), async (req: Request, res: ExpressResponse) => {
+    const { session, submission, ruling, note } = (req.body ?? {}) as Record<string, unknown>;
+    if (!isValidUuid(session)) {
+      res.status(400).json({ error: 'session must be a valid UUID' });
+      return;
+    }
+    if (!isPositiveInteger(submission)) {
+      res.status(400).json({ error: 'submission must be an integer >= 1' });
+      return;
+    }
+    await relayModerator(req, res, `${sessionPath(session)}/submissions/${submission}/ruling`, {
+      method: 'POST',
+      body: { ruling, note },
+    });
   });
 
-  app.post('/moderator/stop', express.json(), async (req: Request, res: ExpressResponse) => {
-    await relayModerator(req, res, (req.body as Record<string, unknown> | undefined)?.session, 'stop');
+  app.get('/moderator/photo', async (req: Request, res: ExpressResponse) => {
+    const { session, submission } = req.query;
+    if (!isValidUuid(session)) {
+      res.status(400).json({ error: 'session must be a valid UUID' });
+      return;
+    }
+    const submissionId = parseInteger(submission, 1);
+    if (submissionId === undefined) {
+      res.status(400).json({ error: 'submission must be an integer >= 1' });
+      return;
+    }
+    await relayModerator(req, res, `${sessionPath(session)}/submissions/${submissionId}/photo`, { photo: true });
   });
 
-  app.get('/moderator/overview', async (req: Request, res: ExpressResponse) => {
-    await relayModerator(req, res, req.query.session, 'overview');
+  app.get('/moderator/reference-photo', async (req: Request, res: ExpressResponse) => {
+    const { session, checkpoint, position } = req.query;
+    if (!isValidUuid(session)) {
+      res.status(400).json({ error: 'session must be a valid UUID' });
+      return;
+    }
+    const sequence = parseInteger(checkpoint, 1);
+    if (sequence === undefined) {
+      res.status(400).json({ error: 'checkpoint must be an integer >= 1' });
+      return;
+    }
+    const index = parseInteger(position, 0);
+    if (index === undefined) {
+      res.status(400).json({ error: 'position must be an integer >= 0' });
+      return;
+    }
+    await relayModerator(req, res, `${sessionPath(session)}/checkpoints/${sequence}/reference-photos/${index}`, {
+      photo: true,
+    });
   });
 
   return app;

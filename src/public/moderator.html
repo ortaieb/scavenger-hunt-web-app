@@ -54,6 +54,15 @@
 
       <!-- The session -->
       <div id="dashboard" hidden>
+        <p id="all-finished" class="banner" role="status" hidden></p>
+
+        <!-- Photos the referee couldn't decide, oldest first (issue #55). -->
+        <section id="review-panel" class="panel" aria-labelledby="review-title" hidden>
+          <h2 id="review-title">To review</h2>
+          <p class="note review-intro">Oldest first. Approve if the photo shows what was asked, at the right place.</p>
+          <ol id="review-queue" class="review-queue"></ol>
+        </section>
+
         <section class="panel session-panel" aria-labelledby="session-title">
           <h1 id="session-title">Session</h1>
           <p id="phase-badge" class="phase-badge" role="status"></p>
@@ -66,8 +75,13 @@
 
         <section class="panel" aria-labelledby="standings-title">
           <h2 id="standings-title">Standings, lowest points first</h2>
-          <p id="standings-final" class="note" hidden>Final standings: ready to announce the winners.</p>
+          <p id="standings-note" class="note" hidden></p>
           <ol id="standings" class="standings"></ol>
+        </section>
+
+        <section id="decided-panel" class="panel" aria-labelledby="decided-title" hidden>
+          <h2 id="decided-title">Recently decided</h2>
+          <ol id="decided" class="decided"></ol>
         </section>
 
         <section class="panel" aria-labelledby="blocked-title">
@@ -84,6 +98,15 @@
       <form method="dialog" class="confirm-actions">
         <button value="cancel" type="submit" class="button-secondary">Cancel</button>
         <button id="confirm-ok" value="ok" type="submit"></button>
+      </form>
+    </dialog>
+
+    <!-- A photo, enlarged. Its src is an object URL, never the relay's URL. -->
+    <dialog id="photo-viewer" class="viewer" aria-labelledby="viewer-title">
+      <h2 id="viewer-title" class="viewer-title"></h2>
+      <img id="viewer-image" class="viewer-image" alt="" />
+      <form method="dialog">
+        <button type="submit" class="button-secondary">Close</button>
       </form>
     </dialog>
 
