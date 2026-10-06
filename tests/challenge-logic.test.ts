@@ -178,6 +178,7 @@ describe('describeVerdict', () => {
         ['scene_matches', 'Right place'],
         ['pose_correct', 'Right pose'],
         ['session_running', 'Session running'],
+        ['checked_in', 'Checked in'],
       ] as const;
 
       const body = verdictBody({

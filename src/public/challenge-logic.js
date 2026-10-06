@@ -42,6 +42,7 @@ export function readCheckpointFromQuery(searchParams) {
 // Friendly labels for known check names; anything else falls back to the
 // raw name, so a check the game-server adds later still shows up sensibly.
 const CHECK_LABELS = {
+  checked_in: 'Checked in',
   window_open: 'Checkpoint open',
   capture_fresh: 'Photo is recent',
   capture_time_plausible: 'Photo time',

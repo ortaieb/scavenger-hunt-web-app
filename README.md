@@ -77,6 +77,19 @@ records it so teams can challenge results later). The app treats it like
 the matching `409`, not as "Not quite", and drops a photo in progress once
 the session is over.
 
+Each photo is held to the team's check-in at the checkpoint (the
+`checked_in` check, game-server#61), and a check-in holds for one photo. A
+`failed` verdict whose only failed check is `checked_in` (rejection
+`check_in_expired` or `not_checked_in`: the check-in ran out while the photo
+was uploading, or a second phone already used it) isn't "Not quite" either:
+the app checks in again quietly (`POST /arrive`) and goes back to Review
+with the photo kept and "Your check-in ran out. Tap Send to try again." A
+refused arrive is routed by its `code`, as above. When another check failed
+too, the Verdict screen shows it as usual (✗ **Checked in** among the
+checks), and Try again checks in afresh. A `404` from `POST /challenge`
+means the stored identity is no longer known: like `/state`'s `404`, it goes
+back to Join and forgets the identity.
+
 Playing a checkpoint (issue #42): the code is issued and shown but **not
 checked by the referee yet**, so teams don't need it in the photo. If it
 expires before Send, the app quietly arrives again for a fresh one and keeps

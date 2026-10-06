@@ -306,18 +306,67 @@ const SESSION_REJECTIONS = new Set(['session_not_started', 'session_stopped']);
  * @returns {ErrorOutcome | null} null for any other response
  */
 export function sessionRejectionFor(bodyText) {
-  let body;
-  try {
-    body = JSON.parse(bodyText);
-  } catch {
-    return null;
-  }
-  const rejections = body?.verdict?.checkpoint?.rejections;
+  const rejections = parseJson(bodyText)?.verdict?.checkpoint?.rejections;
   if (!Array.isArray(rejections)) {
     return null;
   }
   const code = rejections.map((rejection) => rejection?.code).find((c) => SESSION_REJECTIONS.has(c));
   return code ? screenForError(409, { code }) : null;
+}
+
+/**
+ * Where a `POST /challenge` answer takes the player instead of the Verdict
+ * screen: a photo sent outside the session (see sessionRejectionFor), or a
+ * `404`, which means the stored identity is no longer known. Like
+ * `/state`'s `404`, that's back to Join, forgetting the identity.
+ *
+ * @param {number} status
+ * @param {string} bodyText the /challenge response body
+ * @returns {ErrorOutcome | null} null for a verdict to show, or a failed send
+ */
+export function challengeErrorFor(status, bodyText) {
+  const sessionRejection = sessionRejectionFor(bodyText);
+  if (sessionRejection) {
+    return sessionRejection;
+  }
+  return status === 404 ? screenForError(404, parseJson(bodyText)) : null;
+}
+
+const CHECK_IN_REJECTIONS = new Set(['check_in_expired', 'not_checked_in']);
+
+/**
+ * Whether a `failed` verdict failed only its `checked_in` check: the
+ * check-in ran out while the photo was uploading, or a second phone had
+ * already used it. That's a check-in problem, not a bad photo, so it isn't
+ * "Not quite": the app checks in again quietly and goes back to Review
+ * (see checkpointAfterCheckIn). When another check failed too, the verdict
+ * is shown as usual, and "Try again" checks in afresh anyway.
+ *
+ * @param {string} bodyText the /challenge response body
+ * @returns {boolean}
+ */
+export function onlyCheckInFailed(bodyText) {
+  const checkpoint = parseJson(bodyText)?.verdict?.checkpoint;
+  if (checkpoint?.verdict !== 'failed' || !Array.isArray(checkpoint.rejections)) {
+    return false;
+  }
+  const codes = checkpoint.rejections.map((rejection) => rejection?.code);
+  const failedChecks = Array.isArray(checkpoint.checks)
+    ? checkpoint.checks.filter((check) => check?.outcome === 'failed').map((check) => check.check ?? check.name)
+    : [];
+  return (
+    codes.length > 0 &&
+    codes.every((code) => CHECK_IN_REJECTIONS.has(code)) &&
+    failedChecks.every((name) => name === 'checked_in')
+  );
+}
+
+function parseJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -719,6 +768,32 @@ export function checkpointAfterVerdict(checkpoint, status, bodyText) {
   }
   const message = status === 0 ? "No connection. Your photo is kept: tap Send to try again." : display.message;
   return { ...checkpoint, step: 'photo', message };
+}
+
+/** What Review says once the app has checked in again for a kept photo. */
+export const CHECK_IN_RAN_OUT = 'Your check-in ran out. Tap Send to try again.';
+
+/**
+ * After the quiet `POST /arrive` that follows a photo refused only for its
+ * check-in (see onlyCheckInFailed): back to Review with the photo kept and
+ * the new code, saying to tap Send again. A refused arrive goes back to
+ * Review too, with its error to route by `code` as usual (an error that
+ * changes screen drops the photo then).
+ *
+ * @param {CheckpointProgress} sending
+ * @param {number} status
+ * @param {unknown} body
+ * @returns {Transition}
+ */
+export function checkpointAfterCheckIn(sending, status, body) {
+  /** @type {CheckpointProgress} */
+  const review = { ...sending, step: 'photo', message: undefined };
+  const { checkpoint, error } = checkpointAfterArrive(review, sending.sequence ?? 0, status, body);
+  if (error) {
+    const message = error.offline || !error.message ? CHECK_IN_RAN_OUT : error.message;
+    return { checkpoint: { ...review, message }, error };
+  }
+  return { checkpoint: { ...checkpoint, message: CHECK_IN_RAN_OUT }, error: null };
 }
 
 /**

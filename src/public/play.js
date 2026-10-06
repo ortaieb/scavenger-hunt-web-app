@@ -11,15 +11,17 @@ import * as api from './api.js';
 import { checkProximity, createCamera, deviceHasMultipleCameras, getPosition, loadFacingMode, storeFacingMode } from './camera.js';
 import { describeAccuracyHint } from './challenge-logic.js';
 import {
+  challengeErrorFor,
   checkpointAfterArrive,
+  checkpointAfterCheckIn,
   checkpointAfterPhoto,
   checkpointAfterRetake,
   checkpointAfterVerdict,
   checkpointSending,
   clockOffsetFromState,
   finishedSummary,
+  onlyCheckInFailed,
   sessionOverSummary,
-  sessionRejectionFor,
   stateAfterError,
   codeExpired,
   codeTimeLeft,
@@ -878,10 +880,17 @@ sendBtn.addEventListener('click', async () => {
   const result = await api.sendPhoto({ ...identity, image: photoBlob, position: photoPosition });
 
   // A photo sent outside the session is recorded but doesn't count: that's
-  // Session over (or the lobby), never "Not quite".
-  const sessionRejection = sessionRejectionFor(result.text);
-  if (sessionRejection) {
-    await applyError(sessionRejection, 'review-error');
+  // Session over (or the lobby), never "Not quite". A 404 means the stored
+  // identity is no longer known: back to Join.
+  const challengeError = challengeErrorFor(result.status, result.text);
+  if (challengeError) {
+    await applyError(challengeError, 'review-error');
+    return;
+  }
+  // Nor is a photo whose check-in ran out on the way, or that a second
+  // phone beat to it: check in again and keep the photo.
+  if (onlyCheckInFailed(result.text)) {
+    await checkInAgain(checkpoint.sequence);
     return;
   }
   if (result.status === 0) {
@@ -896,6 +905,28 @@ sendBtn.addEventListener('click', async () => {
   // The new points total and progress.
   void refreshState();
 });
+
+/**
+ * Checks in again quietly for a photo refused only for its check-in, then
+ * goes back to Review with the photo kept, for Send to be tapped again.
+ *
+ * @param {number} sequence
+ */
+async function checkInAgain(sequence) {
+  const identity = identityFor(sequence);
+  const result = await api.arrive(identity.session, identity.participant, sequence);
+  if (appState.checkpoint?.sequence !== sequence) {
+    // Left the game meanwhile.
+    return;
+  }
+  const { checkpoint, error } = checkpointAfterCheckIn(appState.checkpoint, result.status, result.body);
+  appState.checkpoint = checkpoint;
+  if (error) {
+    await applyError(error, 'review-error');
+    return;
+  }
+  render();
+}
 
 verdictBtn.addEventListener('click', async () => {
   const checkpoint = appState.checkpoint;
