@@ -885,6 +885,23 @@ describe('moderator relays', () => {
     ],
     blocked: [{ at: '2026-10-03T13:05:02Z', team: 'Blue Herons', action: 'photo', code: 'session_stopped' }],
   };
+  const review = {
+    'to-review': [
+      {
+        submission: 42,
+        team: 'Red Foxes',
+        checkpoint: { sequence: 2, name: 'Lion fountain' },
+        attempt: 1,
+        'received-at': '2026-10-03T10:41:05Z',
+        pose: 'Arms raised as if flying, facing the camera',
+        scene: "A stone fountain with a lion's head spout",
+        'reference-photos': 2,
+        checks: [{ check: 'pose_correct', outcome: 'uncertain', confidence: 0.62, reason: '…', detail: 'One arm raised.' }],
+        referee: { status: 'ok', 'error-code': null },
+      },
+    ],
+    recent: [],
+  };
 
   // Each relay, with how to call it for a given session and what it relays to.
   const relays = [
@@ -912,6 +929,16 @@ describe('moderator relays', () => {
       send: (app: ReturnType<typeof createApp>, session: unknown) =>
         request(app)
           .get('/moderator/overview')
+          .query(session === undefined ? {} : { session: session as string }),
+    },
+    {
+      name: 'GET /moderator/review',
+      method: 'GET',
+      upstreamPath: 'review',
+      success: { status: 200, body: review },
+      send: (app: ReturnType<typeof createApp>, session: unknown) =>
+        request(app)
+          .get('/moderator/review')
           .query(session === undefined ? {} : { session: session as string }),
     },
   ] as const;
@@ -1016,6 +1043,281 @@ describe('moderator relays', () => {
 
     expect(response.status).toBe(409);
     expect(response.body).toEqual(body);
+  });
+
+  describe('POST /moderator/ruling', () => {
+    const ruled = {
+      submission: 42,
+      verdict: 'pending',
+      ruling: { ruling: 'approve', note: 'Arm just cropped', 'ruled-at': '2026-10-03T10:52:40Z' },
+      'effective-verdict': 'pass',
+    };
+    const send = (app: ReturnType<typeof createApp>, body: object) =>
+      request(app).post('/moderator/ruling').set('Authorization', MODERATOR_AUTH).send(body);
+
+    it.each([
+      ['approve', 'Arm just cropped'],
+      ['reject', undefined],
+    ])(
+      'sends only { ruling: %j, note } to the submission, with the Authorization header, and passes the response through',
+      async (ruling, note) => {
+        const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(201, ruled)));
+
+        const response = await send(createApp(testConfig, { fetch: fetchMock }), {
+          session: VALID_SESSION,
+          submission: 42,
+          ruling,
+          note,
+        });
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        const [calledUrl, init] = vi.mocked(fetchMock).mock.calls[0]!;
+        expect((calledUrl as URL).href).toBe(
+          `http://game-server.test/sessions/${VALID_SESSION}/submissions/42/ruling`,
+        );
+        expect(init?.method).toBe('POST');
+        expect(init?.headers).toEqual({ authorization: MODERATOR_AUTH, 'content-type': 'application/json' });
+        expect(JSON.parse(init?.body as string)).toEqual(note === undefined ? { ruling } : { ruling, note });
+        expect(response.status).toBe(201);
+        expect(response.body).toEqual(ruled);
+      },
+    );
+
+    it('passes a 200 for a changed ruling, and a 422 for an invalid one, through unchanged', async () => {
+      const invalid = { detail: [{ msg: 'Input should be approve or reject' }] };
+      const fetchMock = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, ruled))
+        .mockResolvedValueOnce(jsonResponse(422, invalid));
+      const app = createApp(testConfig, { fetch: fetchMock });
+
+      const changed = await send(app, { session: VALID_SESSION, submission: 42, ruling: 'reject' });
+      const refused = await send(app, { session: VALID_SESSION, submission: 42, ruling: 'maybe' });
+
+      expect(changed.status).toBe(200);
+      expect(refused.status).toBe(422);
+      expect(refused.body).toEqual(invalid);
+    });
+
+    it('forwards a missing Authorization header as missing, and passes the 401 back', async () => {
+      const unauthorised = { detail: 'moderator code required', code: 'moderator_unauthorised' };
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(401, unauthorised)));
+
+      const response = await request(createApp(testConfig, { fetch: fetchMock }))
+        .post('/moderator/ruling')
+        .send({ session: VALID_SESSION, submission: 42, ruling: 'approve' });
+
+      const [, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect(init?.headers).toEqual({ 'content-type': 'application/json' });
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual(unauthorised);
+    });
+
+    it.each([
+      ['a missing session', { submission: 42, ruling: 'approve' }],
+      ['a session that is not a UUID', { session: 'not-a-uuid', submission: 42, ruling: 'approve' }],
+      ['a missing submission', { session: VALID_SESSION, ruling: 'approve' }],
+      ['a submission of 0', { session: VALID_SESSION, submission: 0, ruling: 'approve' }],
+      ['a fractional submission', { session: VALID_SESSION, submission: 1.5, ruling: 'approve' }],
+      ['a submission sent as text', { session: VALID_SESSION, submission: '42/../7', ruling: 'approve' }],
+    ])('rejects %s with 400, and sends nothing upstream', async (_label, body) => {
+      const fetchMock: typeof fetch = vi.fn();
+
+      const response = await send(createApp(testConfig, { fetch: fetchMock }), body);
+
+      expect(response.status).toBe(400);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('returns 502 when the game server cannot be reached, and 504 when it is too slow', async () => {
+      const unreachable: typeof fetch = vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED')));
+      const slow: typeof fetch = vi.fn((_input, init?: FetchInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        }),
+      );
+      const body = { session: VALID_SESSION, submission: 42, ruling: 'approve' };
+
+      const notReached = await send(createApp(testConfig, { fetch: unreachable }), body);
+      const tooSlow = await send(createApp({ ...testConfig, gameServerTimeoutMs: 30 }, { fetch: slow }), body);
+
+      expect(notReached.status).toBe(502);
+      expect(tooSlow.status).toBe(504);
+    });
+  });
+
+  // The two photo relays: a player's photo and a checkpoint's reference photo.
+  const photoRelays = [
+    {
+      name: 'GET /moderator/photo',
+      query: { submission: '42' },
+      upstreamPath: 'submissions/42/photo',
+      invalid: [
+        ['a missing submission', {}],
+        ['a submission of 0', { submission: '0' }],
+        ['a submission that is not a number', { submission: '42/../7' }],
+      ],
+      path: '/moderator/photo',
+    },
+    {
+      name: 'GET /moderator/reference-photo',
+      query: { checkpoint: '2', position: '0' },
+      upstreamPath: 'checkpoints/2/reference-photos/0',
+      invalid: [
+        ['a missing checkpoint', { position: '0' }],
+        ['a checkpoint of 0', { checkpoint: '0', position: '0' }],
+        ['a missing position', { checkpoint: '2' }],
+        ['an empty position', { checkpoint: '2', position: '' }],
+        ['a negative position', { checkpoint: '2', position: '-1' }],
+        ['a fractional position', { checkpoint: '2', position: '0.5' }],
+      ],
+      path: '/moderator/reference-photo',
+    },
+  ] as const;
+
+  describe.each(photoRelays)('$name', ({ query, upstreamPath, invalid, path }) => {
+    const get = (app: ReturnType<typeof createApp>, params: Record<string, string>) =>
+      request(app)
+        .get(path)
+        .query(params)
+        .buffer(true)
+        .parse((res, callback) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => callback(null, Buffer.concat(chunks)));
+        });
+
+    it('forwards the Authorization header and streams the JPEG back with Cache-Control: no-store', async () => {
+      const fetchMock: typeof fetch = vi.fn(() =>
+        Promise.resolve(new Response(jpegBytes, { status: 200, headers: { 'content-type': 'image/jpeg' } })),
+      );
+
+      const response = await get(createApp(testConfig, { fetch: fetchMock }), {
+        session: VALID_SESSION,
+        ...query,
+      }).set('Authorization', MODERATOR_AUTH);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [calledUrl, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect((calledUrl as URL).href).toBe(`http://game-server.test/sessions/${VALID_SESSION}/${upstreamPath}`);
+      expect(init?.method).toBe('GET');
+      expect(init?.headers).toEqual({ authorization: MODERATOR_AUTH });
+      expect(init?.body).toBeUndefined();
+
+      expect(response.status).toBe(200);
+      expect(response.headers['content-type']).toBe('image/jpeg');
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.body).toEqual(jpegBytes);
+    });
+
+    it('forwards a missing Authorization header as missing, and passes the 401 back', async () => {
+      const unauthorised = { detail: 'moderator code required', code: 'moderator_unauthorised' };
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(401, unauthorised)));
+
+      const response = await get(createApp(testConfig, { fetch: fetchMock }), { session: VALID_SESSION, ...query });
+
+      const [, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect(init?.headers).toEqual({});
+      expect(response.status).toBe(401);
+      expect(response.headers['content-type']).toContain('application/json');
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(JSON.parse((response.body as Buffer).toString())).toEqual(unauthorised);
+    });
+
+    it('passes a 404 back unchanged', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(404, { detail: 'photo not found' })));
+
+      const response = await get(createApp(testConfig, { fetch: fetchMock }), {
+        session: VALID_SESSION,
+        ...query,
+      }).set('Authorization', MODERATOR_AUTH);
+
+      expect(response.status).toBe(404);
+      expect(JSON.parse((response.body as Buffer).toString())).toEqual({ detail: 'photo not found' });
+    });
+
+    const badRequests: [string, Record<string, string>][] = [
+      ['a missing session', { ...query }],
+      ['a session that is not a UUID', { ...query, session: 'not-a-uuid' }],
+      ...invalid.map(([label, params]): [string, Record<string, string>] => [
+        label,
+        { session: VALID_SESSION, ...params },
+      ]),
+    ];
+
+    it.each(badRequests)('rejects %s with 400, and sends nothing upstream', async (_label, params) => {
+      const fetchMock: typeof fetch = vi.fn();
+
+      const response = await get(createApp(testConfig, { fetch: fetchMock }), params).set(
+        'Authorization',
+        MODERATOR_AUTH,
+      );
+
+      expect(response.status).toBe(400);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('returns 502 when the game server cannot be reached', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED')));
+
+      const response = await get(createApp(testConfig, { fetch: fetchMock }), { session: VALID_SESSION, ...query });
+
+      expect(response.status).toBe(502);
+    });
+
+    it('returns 504 when the game server does not respond within the configured timeout', async () => {
+      const fetchMock: typeof fetch = vi.fn((_input, init?: FetchInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        }),
+      );
+
+      const response = await get(createApp({ ...testConfig, gameServerTimeoutMs: 30 }, { fetch: fetchMock }), {
+        session: VALID_SESSION,
+        ...query,
+      });
+
+      expect(response.status).toBe(504);
+    });
+  });
+
+  it('never logs the moderator code, a note or a photo, whatever the outcome', async () => {
+    const secret = 'Bearer never-log-this-code';
+    const note = 'never-log-this-note';
+    const logged = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => undefined),
+    );
+    try {
+      for (const upstream of [
+        () => Promise.resolve(jsonResponse(200, review)),
+        () => Promise.resolve(new Response(jpegBytes, { headers: { 'content-type': 'image/jpeg' } })),
+        () => Promise.resolve(jsonResponse(401, { detail: 'moderator code required' })),
+        () => Promise.reject(new Error('connect ECONNREFUSED')),
+      ]) {
+        const app = createApp(testConfig, { fetch: vi.fn(upstream) });
+        await request(app).get(`/moderator/review?session=${VALID_SESSION}`).set('Authorization', secret);
+        await request(app).get(`/moderator/photo?session=${VALID_SESSION}&submission=42`).set('Authorization', secret);
+        await request(app)
+          .get(`/moderator/reference-photo?session=${VALID_SESSION}&checkpoint=2&position=0`)
+          .set('Authorization', secret);
+        await request(app)
+          .post('/moderator/ruling')
+          .set('Authorization', secret)
+          .send({ session: VALID_SESSION, submission: 42, ruling: 'approve', note });
+      }
+
+      for (const spy of logged) {
+        expect(spy).not.toHaveBeenCalled();
+      }
+    } finally {
+      for (const spy of logged) {
+        spy.mockRestore();
+      }
+    }
   });
 });
 
