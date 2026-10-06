@@ -17,12 +17,24 @@
         <label for="session-input">Session ID</label>
         <input id="session-input" type="text" autocomplete="off" spellcheck="false" />
         <label for="participant-input">Participant ID</label>
-        <input id="participant-input" type="text" autocomplete="off" spellcheck="false" />
+        <input
+          id="participant-input"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="A joined participant: from POST /join, or /play"
+        />
       </fieldset>
+
+      <section class="check-in">
+        <button id="arrive" type="button">I'm here</button>
+        <p id="check-in-status" class="check-in-status" role="status"></p>
+      </section>
 
       <section id="challenge-panel" class="challenge-panel" hidden>
         <h2>Your challenge</h2>
         <p id="challenge-pose"></p>
+        <p class="challenge-code">Code <strong id="challenge-code"></strong> <span id="challenge-expiry"></span></p>
       </section>
 
       <fieldset id="camera-toggle" class="camera-toggle" hidden>

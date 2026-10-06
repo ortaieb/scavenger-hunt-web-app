@@ -192,25 +192,48 @@ export function describeProximityWarning(status, body) {
 }
 
 /**
- * Turns the checkpoint-challenge relay's response into pose text to show,
- * or null to hide the panel. The pose is guidance only, never a check: a
- * `{ pose: null }` body, a 404, a malformed body, any other non-2xx status,
- * or a request that never came back at all (represented here as status 0 —
- * see the caller) all mean "hide, and never block Capture or Submit" (see
- * issue #20).
- *
- * @param {number} status
- * @param {unknown} body already-parsed JSON, or null if parsing failed
- * @returns {string | null}
+ * @typedef {{ ok: true, pose: string | null, code: string, expiresAt: string }
+ *   | { ok: false, message: string }} ArrivalDisplay
  */
-export function describeChallenge(status, body) {
-  if (status < 200 || status >= 300) {
-    return null;
+
+/**
+ * Turns the `/arrive` relay's response into what to show after "I'm here":
+ * the pose and one-time code the game-server issued at check-in, or why it
+ * refused. The game-server holds every photo to a check-in and judges the
+ * pose it issued there (game-server#61), so the pose comes only from here,
+ * and Submit waits for a check-in. A `null` pose (no challenge at this
+ * checkpoint) is hidden; the code is still issued.
+ *
+ * @param {number} status 0 when the call never came back
+ * @param {unknown} body already-parsed JSON, or null
+ * @returns {ArrivalDisplay}
+ */
+export function describeArrival(status, body) {
+  const fields = body && typeof body === 'object' ? /** @type {Record<string, unknown>} */ (body) : {};
+
+  if ((status === 200 || status === 201) && typeof fields.code === 'string' && fields.code) {
+    return {
+      ok: true,
+      pose: typeof fields.pose === 'string' && fields.pose ? fields.pose : null,
+      code: fields.code,
+      expiresAt: typeof fields['expires-at'] === 'string' ? fields['expires-at'] : '',
+    };
   }
-  if (body && typeof body === 'object' && typeof body.pose === 'string' && body.pose.length > 0) {
-    return body.pose;
+  if (status === 0) {
+    return { ok: false, message: 'Check-in failed: no answer from the server. Try again.' };
   }
-  return null;
+  // A developer page: show what the game-server (or the relay) said. A 409
+  // carries a snake_case `code`, unlike the 4-digit one in a success.
+  const code = status === 200 || status === 201 ? '' : stringOrEmpty(fields.code);
+  const detail = stringOrEmpty(fields.detail) || stringOrEmpty(fields.error);
+  return {
+    ok: false,
+    message: `Check-in refused (${[status, code].filter(Boolean).join(' ')})${detail ? `: ${detail}` : ''}`,
+  };
+}
+
+function stringOrEmpty(value) {
+  return typeof value === 'string' ? value : '';
 }
 
 /** @typedef {'environment' | 'user'} FacingMode */
