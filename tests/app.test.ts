@@ -102,6 +102,14 @@ describe('GET /moderator', () => {
     expect(response.text).toMatch(/<form id="sign-in-form" method="post"/);
     expect(response.text).toMatch(/id="moderator-code"[\s\S]*?type="password"/);
   });
+
+  it('has the review queue at the top, and Recently decided', async () => {
+    const response = await request(createApp(testConfig)).get('/moderator');
+
+    expect(response.text).toMatch(/id="all-finished"[\s\S]*id="review-panel"[\s\S]*id="session-title"/);
+    expect(response.text).toContain('id="decided-panel"');
+    expect(response.text).toContain('<dialog id="photo-viewer"');
+  });
 });
 
 describe.each(['/moderator.js', '/moderator-logic.js', '/moderator.css'])('GET %s', (asset) => {
@@ -124,7 +132,22 @@ describe('the moderator code', () => {
 
     expect(response.text).toContain('sessionStorage.setItem');
     expect(response.text).toContain('authorization: `Bearer ${');
-    expect(response.text).not.toMatch(/console\./);
+  });
+
+  it.each(['/moderator.js', '/moderator-logic.js'])(
+    'is never logged by %s, nor a photo URL, a note or the referee\'s reasons',
+    async (asset) => {
+      const response = await request(createApp(testConfig)).get(asset);
+
+      expect(response.text).not.toMatch(/console\./);
+    },
+  );
+
+  it('fetches photos with the code and shows them through object URLs it revokes', async () => {
+    const response = await request(createApp(testConfig)).get('/moderator.js');
+
+    expect(response.text).toContain('URL.createObjectURL');
+    expect(response.text).toContain('URL.revokeObjectURL');
   });
 });
 
