@@ -1,6 +1,7 @@
 // Calls from the /play page to this app's own relays (never the game-server
 // directly — see the relays in src/app.ts), each with a timeout so a lost
-// signal never leaves the page waiting forever.
+// signal never leaves the page waiting forever. The /challenge developer
+// page uses arrive() too, for its "I'm here".
 
 const REQUEST_TIMEOUT_MS = 15000;
 // The referee checks a photo before /challenge answers, and this app's

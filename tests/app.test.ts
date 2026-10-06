@@ -236,11 +236,24 @@ describe('GET /challenge', () => {
     expect(response.text).not.toMatch(/id="participant-input"[^>]*\bdisabled\b/);
   });
 
-  it('includes the "Your challenge" panel, hidden by default', async () => {
+  it('includes the "Your challenge" panel, hidden until a check-in', async () => {
     const response = await request(createApp(testConfig)).get('/challenge');
 
     expect(response.text).toMatch(/id="challenge-panel"[^>]*\bhidden\b/);
     expect(response.text).toContain('id="challenge-pose"');
+    expect(response.text).toContain('id="challenge-code"');
+  });
+
+  it("includes an I'm here button to check in", async () => {
+    const response = await request(createApp(testConfig)).get('/challenge');
+
+    expect(response.text).toMatch(/<button id="arrive"[^>]*>I'm here<\/button>/);
+  });
+
+  it('leaves the participant field empty: there is no random default', async () => {
+    const response = await request(createApp(testConfig)).get('/challenge');
+
+    expect(response.text).not.toMatch(/id="participant-input"[^>]*\bvalue=/);
   });
 
   it('includes the verdict checklist, hidden by default', async () => {
@@ -257,6 +270,14 @@ describe('GET /challenge.js', () => {
     expect(response.status).toBe(200);
     expect(response.headers['content-type']).toMatch(/javascript/);
     expect(response.text).toContain("from './camera.js'");
+  });
+
+  it('checks in through the /arrive relay, never the retired pose relay', async () => {
+    const response = await request(createApp(testConfig)).get('/challenge.js');
+
+    expect(response.text).toContain("import { arrive } from './api.js'");
+    expect(response.text).not.toContain('/checkpoint/challenge');
+    expect(response.text).not.toContain('randomUUID');
   });
 });
 
@@ -511,73 +532,15 @@ describe('POST /checkpoint/proximity', () => {
 });
 
 describe('GET /checkpoint/challenge', () => {
-  it('relays to the correct game-server URL and passes the response through', async () => {
-    const fetchMock: typeof fetch = vi.fn(() =>
-      Promise.resolve(
-        new Response(JSON.stringify({ pose: 'Stand next to the red door' }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      ),
-    );
-
-    const response = await request(createApp(testConfig, { fetch: fetchMock })).get(
-      `/checkpoint/challenge?session=${VALID_SESSION}&checkpoint=2`,
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [calledUrl] = vi.mocked(fetchMock).mock.calls[0]!;
-    expect((calledUrl as URL).href).toBe(
-      `http://game-server.test/sessions/${VALID_SESSION}/checkpoints/2/challenge`,
-    );
-
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({ pose: 'Stand next to the red door' });
-  });
-
-  it.each([
-    ['a null pose', 200, { pose: null }],
-    ['a 404', 404, { error: 'unknown session or checkpoint' }],
-  ])('passes back status and body unchanged for %s', async (_label, status, body) => {
-    const fetchMock: typeof fetch = vi.fn(() =>
-      Promise.resolve(
-        new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }),
-      ),
-    );
-
-    const response = await request(createApp(testConfig, { fetch: fetchMock })).get(
-      `/checkpoint/challenge?session=${VALID_SESSION}&checkpoint=2`,
-    );
-
-    expect(response.status).toBe(status);
-    expect(response.body).toEqual(body);
-  });
-
-  it('returns 502 when the game server cannot be reached', async () => {
-    const fetchMock: typeof fetch = vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED')));
-
-    const response = await request(createApp(testConfig, { fetch: fetchMock })).get(
-      `/checkpoint/challenge?session=${VALID_SESSION}&checkpoint=2`,
-    );
-
-    expect(response.status).toBe(502);
-    expect((response.body as ErrorBody).error).toContain('connect ECONNREFUSED');
-  });
-
-  it.each([
-    ['missing session', ''],
-    ['invalid session', 'session=not-a-uuid&checkpoint=2'],
-    ['missing checkpoint', `session=${VALID_SESSION}`],
-    ['non-integer checkpoint', `session=${VALID_SESSION}&checkpoint=1.5`],
-    ['checkpoint below 1', `session=${VALID_SESSION}&checkpoint=0`],
-  ])('rejects a request with %s, and sends nothing upstream', async (_label, query) => {
+  it('is gone: the pose comes from /arrive, and nothing is sent upstream', async () => {
+    // The game-server retired the endpoint behind it (game-server#75).
     const fetchMock: typeof fetch = vi.fn();
 
     const response = await request(createApp(testConfig, { fetch: fetchMock })).get(
-      `/checkpoint/challenge?${query}`,
+      `/checkpoint/challenge?session=${VALID_SESSION}&checkpoint=2`,
     );
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(404);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

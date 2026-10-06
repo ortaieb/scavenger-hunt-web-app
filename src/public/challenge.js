@@ -1,12 +1,14 @@
 // In-app camera capture + geolocation for the /challenge page. The camera
-// and location code itself is shared with /play, in camera.js.
+// and location code itself is shared with /play, in camera.js, and so is
+// the call to the /arrive relay, in api.js.
 
+import { arrive } from './api.js';
 import {
   isValidUuid,
   readCheckpointFromQuery,
   describeVerdict,
   describeAccuracyHint,
-  describeChallenge,
+  describeArrival,
   readFacingMode,
 } from './challenge-logic.js';
 import {
@@ -17,9 +19,6 @@ import {
   loadFacingMode,
   storeFacingMode,
 } from './camera.js';
-
-const CHALLENGE_TIMEOUT_MS = 3000;
-const CHALLENGE_DEBOUNCE_MS = 500;
 
 const statusEl = document.getElementById('status');
 const video = document.getElementById('preview');
@@ -32,8 +31,12 @@ const locationEl = document.getElementById('location');
 const locationWarningEl = document.getElementById('location-warning');
 const sessionInput = document.getElementById('session-input');
 const participantInput = document.getElementById('participant-input');
+const arriveBtn = document.getElementById('arrive');
+const checkInStatusEl = document.getElementById('check-in-status');
 const challengePanelEl = document.getElementById('challenge-panel');
 const challengePoseEl = document.getElementById('challenge-pose');
+const challengeCodeEl = document.getElementById('challenge-code');
+const challengeExpiryEl = document.getElementById('challenge-expiry');
 const checklistEl = document.getElementById('verdict-checklist');
 const cameraToggleEl = document.getElementById('camera-toggle');
 const cameraRadios = cameraToggleEl.querySelectorAll('input[name="camera"]');
@@ -56,11 +59,15 @@ let accuracyHintText = '';
 let proximityHintText = '';
 let latestFixId = 0;
 
-// "Your challenge" panel state (see issue #20): re-fetched, debounced, when
-// the Session ID field settles on a new valid UUID.
-let challengeDebounceTimer = null;
-let lastFetchedChallengeSession = null;
-let latestChallengeRequestId = 0;
+// Check-in state (see issue #54): the game-server holds every photo to the
+// team's check-in at the checkpoint, one photo per check-in, and judges the
+// pose it issued there. So Submit waits for "I'm here", and a photo that
+// got a verdict has used the check-in up. An arrive id guards against a
+// slow answer landing after the identity fields have changed.
+let checkedIn = false;
+let arriving = false;
+let submitting = false;
+let latestArriveId = 0;
 
 // The checkpoint names a specific point in the hunt, so — unlike
 // session/participant — it always has to come from the link, with no
@@ -106,24 +113,18 @@ function describeError(err) {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** A random UUID for the participant field's default value. */
-function generateUuid() {
-  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : '';
-}
-
-// TEMP (see issue #32): until there's a real session-join UI, the session
-// field defaults to this fixed, known id instead of a random one, so manual
-// testing against the game-server can reuse the same session repeatedly
-// rather than minting a new one on every page load. Revert to
-// generateUuid() once that UI exists.
+// TEMP (see issue #32): the session field defaults to this fixed, known id
+// (the game-server's example session), so manual testing can reuse the same
+// session repeatedly.
 const TEMP_DEFAULT_SESSION_ID = 'aeffe667-4f9f-4108-b5e2-56ae821fe413';
 
 /**
  * Session and participant are editable fields, not fixed like checkpoint
  * (see issue #18) — pre-filled from the query string when it supplies a
- * valid UUID (so existing links keep working), a default otherwise, and
- * editable from there. Participant's default is a fresh random UUID;
- * session's is currently the fixed TEMP_DEFAULT_SESSION_ID (see issue #32).
+ * valid UUID (so existing links keep working), and editable from there.
+ * Session defaults to TEMP_DEFAULT_SESSION_ID (see issue #32). Participant
+ * has no default: a made-up one has never joined, and the game-server
+ * refuses it (see issue #54), so it comes from the link or is typed in.
  */
 function initIdentityFields() {
   const params = new URLSearchParams(window.location.search);
@@ -131,7 +132,7 @@ function initIdentityFields() {
   const participantFromQuery = params.get('participant');
 
   sessionInput.value = isValidUuid(sessionFromQuery) ? sessionFromQuery : TEMP_DEFAULT_SESSION_ID;
-  participantInput.value = isValidUuid(participantFromQuery) ? participantFromQuery : generateUuid();
+  participantInput.value = isValidUuid(participantFromQuery) ? participantFromQuery : '';
 }
 
 /**
@@ -150,75 +151,82 @@ function getIdentity() {
   return { session, participant, checkpoint };
 }
 
-function renderChallenge(pose) {
-  if (pose === null) {
-    challengePanelEl.hidden = true;
-    challengePoseEl.textContent = '';
-  } else {
-    // textContent, never innerHTML: the pose comes from a moderator-written
-    // file, not code this app controls (see issue #20).
-    challengePoseEl.textContent = pose;
-    challengePanelEl.hidden = false;
-  }
-}
-
 /**
- * Fetches the checkpoint's pose instruction for the given session, via this
- * app's own relay. The pose is guidance only: it never blocks Capture or
- * Submit, and every failure mode (404, timeout, network error, a malformed
- * response) just hides the panel rather than showing an error.
+ * The "Your challenge" panel: the pose and code from the latest check-in,
+ * or hidden without one.
  *
- * @param {string} session
+ * @param {{ pose: string | null, code: string, expiresAt: string } | null} arrival
  */
-async function fetchChallenge(session) {
-  const requestId = ++latestChallengeRequestId;
-  let pose;
+function renderChallenge(arrival) {
+  challengePanelEl.hidden = arrival === null;
+  // textContent, never innerHTML: the pose comes from a moderator-written
+  // file, not code this app controls (see issue #20).
+  challengePoseEl.textContent = arrival?.pose ?? '';
+  challengePoseEl.hidden = !arrival?.pose;
+  challengeCodeEl.textContent = arrival?.code ?? '';
+  const expiresAt = Date.parse(arrival?.expiresAt ?? '');
+  challengeExpiryEl.textContent = Number.isFinite(expiresAt)
+    ? `(until ${new Date(expiresAt).toLocaleTimeString()})`
+    : '';
+}
 
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), CHALLENGE_TIMEOUT_MS);
+function setCheckInStatus(message) {
+  checkInStatusEl.textContent = message;
+}
 
-    let response;
-    try {
-      response = await fetch(
-        `/checkpoint/challenge?session=${encodeURIComponent(session)}&checkpoint=${checkpoint}`,
-        { signal: controller.signal },
-      );
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    const body = await response.json().catch(() => null);
-    pose = describeChallenge(response.status, body);
-  } catch {
-    // Network error or timeout/abort — status 0 stands for "no response at
-    // all", which describeChallenge already treats the same as any other
-    // failure: hide the panel.
-    pose = describeChallenge(0, null);
-  }
-
-  if (requestId === latestChallengeRequestId) {
-    renderChallenge(pose);
-  }
+function updateButtons() {
+  arriveBtn.disabled = checkpoint === null || arriving || submitting;
+  arriveBtn.textContent = arriving ? 'Checking in…' : "I'm here";
+  submitBtn.disabled = submitting || !checkedIn;
 }
 
 /**
- * Re-fetches the pose when the Session ID field settles on a new valid
- * UUID, debounced so a fetch isn't fired on every keystroke.
+ * Forgets the check-in: when the identity fields change (it was for the old
+ * ones), or once a photo has used it.
+ *
+ * @param {string} [message] what to say instead of the default prompt
  */
-function scheduleChallengeFetch() {
-  clearTimeout(challengeDebounceTimer);
-  challengeDebounceTimer = setTimeout(() => {
-    if (checkpoint === null) {
-      return;
-    }
-    const session = sessionInput.value.trim();
-    if (!isValidUuid(session) || session === lastFetchedChallengeSession) {
-      return;
-    }
-    lastFetchedChallengeSession = session;
-    void fetchChallenge(session);
-  }, CHALLENGE_DEBOUNCE_MS);
+function resetCheckIn(message) {
+  latestArriveId += 1;
+  checkedIn = false;
+  arriving = false;
+  renderChallenge(null);
+  setCheckInStatus(
+    message ??
+      (getIdentity()
+        ? "Not checked in yet: tap I'm here at the checkpoint."
+        : "Enter the session and a participant that has joined it, then tap I'm here."),
+  );
+  updateButtons();
+}
+
+/**
+ * "I'm here": checks in at the checkpoint via this app's /arrive relay, and
+ * shows the pose and code the game-server issued.
+ */
+async function checkIn() {
+  const identity = getIdentity();
+  if (!identity) {
+    setCheckInStatus('Session and participant must both be a valid ID before you can check in.');
+    return;
+  }
+
+  const arriveId = ++latestArriveId;
+  arriving = true;
+  updateButtons();
+  setCheckInStatus('Checking in…');
+
+  const { status, body } = await arrive(identity.session, identity.participant, identity.checkpoint);
+  if (arriveId !== latestArriveId) {
+    return;
+  }
+
+  arriving = false;
+  const arrival = describeArrival(status, body);
+  checkedIn = arrival.ok;
+  renderChallenge(arrival.ok ? arrival : null);
+  setCheckInStatus(arrival.ok ? 'Checked in. Strike the pose, take the photo and submit.' : arrival.message);
+  updateButtons();
 }
 
 /**
@@ -355,6 +363,10 @@ async function submitCapture() {
     setStatus('Session and participant must both be a valid ID before you can submit.');
     return;
   }
+  if (!checkedIn) {
+    setStatus("Tap I'm here to check in before you submit.");
+    return;
+  }
   if (!capturedBlob) {
     setStatus('Take a photo first.');
     return;
@@ -366,7 +378,8 @@ async function submitCapture() {
 
   // The referee now runs before the response, which can take several
   // seconds — lock the whole flow down while it does (see issue #21).
-  submitBtn.disabled = true;
+  submitting = true;
+  updateButtons();
   captureBtn.disabled = true;
   retakeBtn.disabled = true;
   setVerdictVariant(null);
@@ -394,6 +407,10 @@ async function submitCapture() {
     setStatus(message);
     setVerdictVariant(variant);
     renderChecklist(checklist);
+    if (variant !== 'error') {
+      // The photo was recorded against the check-in, whatever its verdict.
+      resetCheckIn("That photo used the check-in. Tap I'm here again before the next one.");
+    }
     if (hideSubmit) {
       // A pass needs no more submissions; a failed one needs a fresh photo
       // rather than resubmitting the one that was just rejected.
@@ -406,7 +423,8 @@ async function submitCapture() {
   } catch (err) {
     setStatus(`Upload failed: ${describeError(err)}`);
   } finally {
-    submitBtn.disabled = false;
+    submitting = false;
+    updateButtons();
     captureBtn.disabled = false;
     retakeBtn.disabled = false;
   }
@@ -419,20 +437,22 @@ retakeBtn.addEventListener('click', retake);
 submitBtn.addEventListener('click', () => {
   void submitCapture();
 });
-sessionInput.addEventListener('input', scheduleChallengeFetch);
+arriveBtn.addEventListener('click', () => {
+  void checkIn();
+});
+// A check-in belongs to the session and participant it was made for.
+sessionInput.addEventListener('input', () => resetCheckIn());
+participantInput.addEventListener('input', () => resetCheckIn());
 cameraRadios.forEach((radio) => {
   radio.checked = radio.value === facingMode;
   radio.addEventListener('change', onCameraToggleChange);
 });
 
 initIdentityFields();
-// Fires once the session field already holds a valid UUID at load, going
-// through the same debounced path as an edit does.
-scheduleChallengeFetch();
+resetCheckIn();
 
 if (checkpoint === null) {
   captureBtn.disabled = true;
-  submitBtn.disabled = true;
   setStatus('This link is missing a valid checkpoint.');
 } else {
   void startCamera();

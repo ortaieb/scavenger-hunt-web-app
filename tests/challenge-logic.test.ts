@@ -3,7 +3,7 @@ import {
   buildVideoConstraints,
   DEFAULT_FACING_MODE,
   describeAccuracyHint,
-  describeChallenge,
+  describeArrival,
   describeProximityWarning,
   describeVerdict,
   hasMultipleCameras,
@@ -178,6 +178,7 @@ describe('describeVerdict', () => {
         ['scene_matches', 'Right place'],
         ['pose_correct', 'Right pose'],
         ['session_running', 'Session running'],
+        ['checked_in', 'Checked in'],
       ] as const;
 
       const body = verdictBody({
@@ -326,39 +327,55 @@ describe('describeProximityWarning', () => {
   });
 });
 
-describe('describeChallenge', () => {
-  it('returns the pose text for a 200 with a pose', () => {
-    expect(describeChallenge(200, { pose: 'Stand next to the red door' })).toBe(
-      'Stand next to the red door',
-    );
+describe('describeArrival', () => {
+  const arriveBody = {
+    checkpoint: 2,
+    pose: 'Arms raised as if flying, facing the camera, with the landmark behind you.',
+    code: '0719',
+    'issued-at': '2026-10-03T09:41:05Z',
+    'expires-at': '2026-10-03T09:51:05Z',
+  };
+
+  it.each([201, 200])('shows the pose and code for a %i', (status) => {
+    expect(describeArrival(status, arriveBody)).toEqual({
+      ok: true,
+      pose: arriveBody.pose,
+      code: '0719',
+      expiresAt: '2026-10-03T09:51:05Z',
+    });
   });
 
-  it('returns null (hide) when pose is null', () => {
-    expect(describeChallenge(200, { pose: null })).toBeNull();
+  it('hides a null or empty pose, still showing the code', () => {
+    expect(describeArrival(201, { ...arriveBody, pose: null })).toMatchObject({ ok: true, pose: null, code: '0719' });
+    expect(describeArrival(201, { ...arriveBody, pose: '' })).toMatchObject({ ok: true, pose: null });
   });
 
-  it('returns null (hide) for a 404', () => {
-    expect(describeChallenge(404, { pose: 'irrelevant' })).toBeNull();
+  it("shows the game-server's code and detail when it refuses", () => {
+    expect(describeArrival(409, { detail: 'not your current checkpoint', code: 'not_current_checkpoint' })).toEqual({
+      ok: false,
+      message: 'Check-in refused (409 not_current_checkpoint): not your current checkpoint',
+    });
   });
 
-  it('returns null (hide) for a non-JSON body', () => {
-    // The caller passes null when JSON.parse fails — see describeProximityWarning.
-    expect(describeChallenge(200, null)).toBeNull();
+  it('says so for a participant that never joined', () => {
+    expect(describeArrival(404, { detail: 'unknown participant' })).toEqual({
+      ok: false,
+      message: 'Check-in refused (404): unknown participant',
+    });
   });
 
-  it('returns null (hide) for a network failure', () => {
-    // The caller represents "no response at all" as status 0.
-    expect(describeChallenge(0, null)).toBeNull();
+  it("shows the relay's own error", () => {
+    expect(describeArrival(400, { error: 'session and participant must be valid UUIDs' })).toEqual({
+      ok: false,
+      message: 'Check-in refused (400): session and participant must be valid UUIDs',
+    });
   });
 
-  it('returns null (hide) when the pose field is missing, empty or the wrong type', () => {
-    expect(describeChallenge(200, {})).toBeNull();
-    expect(describeChallenge(200, { pose: '' })).toBeNull();
-    expect(describeChallenge(200, { pose: 42 })).toBeNull();
-  });
-
-  it.each([429, 500, 502])('returns null (hide) for a %i response', (status) => {
-    expect(describeChallenge(status, { pose: 'Stand next to the red door' })).toBeNull();
+  it('is not a check-in without a code, or with no answer at all', () => {
+    expect(describeArrival(201, {})).toEqual({ ok: false, message: 'Check-in refused (201)' });
+    expect(describeArrival(201, null)).toEqual({ ok: false, message: 'Check-in refused (201)' });
+    expect(describeArrival(0, null).ok).toBe(false);
+    expect(describeArrival(0, null)).toHaveProperty('message', expect.stringContaining('no answer'));
   });
 });
 

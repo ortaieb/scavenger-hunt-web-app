@@ -77,6 +77,19 @@ records it so teams can challenge results later). The app treats it like
 the matching `409`, not as "Not quite", and drops a photo in progress once
 the session is over.
 
+Each photo is held to the team's check-in at the checkpoint (the
+`checked_in` check, game-server#61), and a check-in holds for one photo. A
+`failed` verdict whose only failed check is `checked_in` (rejection
+`check_in_expired` or `not_checked_in`: the check-in ran out while the photo
+was uploading, or a second phone already used it) isn't "Not quite" either:
+the app checks in again quietly (`POST /arrive`) and goes back to Review
+with the photo kept and "Your check-in ran out. Tap Send to try again." A
+refused arrive is routed by its `code`, as above. When another check failed
+too, the Verdict screen shows it as usual (✗ **Checked in** among the
+checks), and Try again checks in afresh. A `404` from `POST /challenge`
+means the stored identity is no longer known: like `/state`'s `404`, it goes
+back to Join and forgets the identity.
+
 Playing a checkpoint (issue #42): the code is issued and shown but **not
 checked by the referee yet**, so teams don't need it in the photo. If it
 expires before Send, the app quietly arrives again for a fresh one and keeps
@@ -123,15 +136,47 @@ A developer tool, kept until there's authentication; players use `/play`.
 
 
 `GET /challenge?checkpoint=<int>` serves an in-app photo + location capture
-page. There's no join flow yet, so **Session ID** and **Participant ID** are
-plain editable text fields on the page — pre-filled from `?session=<uuid>`/
-`?participant=<uuid>` in the link when present and valid, a fresh random
-UUID otherwise (via `crypto.randomUUID()`), and freely editable from there.
-`checkpoint` is different: it names a specific point in the hunt, so it
-always has to come from the link, with no random default — Capture and
-Submit are disabled with a clear message if it's missing or malformed.
-Submit additionally requires both identity fields to hold a valid UUID at
-the moment it's clicked (whatever the player has typed by then).
+page. It has no join flow, so **Session ID** and **Participant ID** are
+plain editable text fields on the page, pre-filled from `?session=<uuid>`/
+`?participant=<uuid>` in the link when present and valid, and freely
+editable from there. Session defaults to the game-server's example session
+(issue #32). Participant has **no default**: the game-server only accepts a
+participant that has joined the session, so it has to come from the link or
+be typed in (see below). `checkpoint` names a specific point in the hunt,
+so it always has to come from the link — I'm here and Capture are disabled
+with a clear message if it's missing or malformed.
+
+The game-server holds every photo to the team's **check-in** at the
+checkpoint (game-server#61): one check-in, one photo, and the referee judges
+the pose issued at check-in. So the page has an **I'm here** button that
+calls this app's `POST /arrive` relay (see [Game loop](#game-loop-join-state-arrive))
+with the page's session, participant and checkpoint, and shows the pose and
+one-time code it returns in a **"Your challenge"** panel (the pose is hidden
+when `null`, and rendered with `textContent`, never `innerHTML`, since it
+comes from a moderator-written file). A refused check-in shows the status
+and the game-server's `code` and `detail`. **Submit is enabled only after a
+check-in**, and a photo that gets a verdict uses it up, so the next photo
+needs I'm here again; editing either identity field forgets it too.
+
+To get a participant that has joined, either:
+
+- join with a team code, against the game-server directly (the team code
+  here is from the game-server's example sessions file):
+
+  ```bash
+  curl -s "$GAME_SERVER_URL/join" -H 'content-type: application/json' \
+    -d '{"code": "FOX-7Q2K", "consent": true}' | jq '{session: .session.id, participant}'
+  ```
+
+  then open `/challenge?checkpoint=1&session=<session>&participant=<participant>`;
+- or use `/play`'s stored identity: join on `/play`, then read
+  `scavenger-hunt.identity` in the browser's local storage (devtools, or
+  `JSON.parse(localStorage.getItem('scavenger-hunt.identity')).participant`
+  in the console).
+
+Checking in needs the session started by its moderator (`/moderator`),
+and the team's current checkpoint: otherwise `/arrive` answers `409` with
+its `code`.
 
 The page renders the device camera directly via `getUserMedia` (no native
 picker, so there's no gallery-upload option), lets the player take and
@@ -209,24 +254,6 @@ over 50m, "Your location fix is imprecise…" appears alongside it. Neither
 hint — nor anything else in this app — ever sees or computes the
 checkpoint's actual coordinates, a distance, or a radius; the game-server
 only ever answers `in_range: true|false`.
-
-#### Pose instruction
-
-Above the camera, a **"Your challenge"** panel shows the checkpoint's pose
-text — how the referee expects the player to pose for the photo (see
-`ortaieb/scavenger-hunt-game-server#22`) — fetched via `GET
-/checkpoint/challenge?session=<uuid>&checkpoint=<int>` (this app's own
-relay, validating both before forwarding to
-`${GAME_SERVER_URL}/sessions/{session}/checkpoints/{checkpoint}/challenge`
-and passing the status/body straight back). It's rendered with
-`textContent`, never `innerHTML`, since the text comes from a
-moderator-written file, not code this app controls.
-
-It's fetched once the Session ID field holds a valid UUID, and re-fetched
-(debounced ~500ms) whenever that field settles on a different valid UUID.
-Like the proximity warning, this is guidance only: a `{"pose": null}` body,
-a `404`, a malformed response, or no answer within ~3s all just hide the
-panel — it never blocks Capture or Submit.
 
 Camera and geolocation only work in a "secure context": HTTPS, or plain HTTP
 on `localhost`. To try `/challenge` from a phone over the LAN (not
@@ -429,9 +456,9 @@ src/
     game-logic.js       pure screen/instruction/error logic for /play, unit tested directly
     moderator-logic.js  pure phase/standings/blocked/review logic for /moderator, unit tested directly
     moderator.js        /moderator's DOM, sign-in, polling, photo and ruling wiring
-    api.js              /play's calls to this app's relays, with timeouts
+    api.js              /play's calls to this app's relays, with timeouts (and /challenge's check-in)
     play.js             /play's DOM/permissions/polling wiring
-    challenge-logic.js  pure identity/verdict/hint logic, unit tested directly
+    challenge-logic.js  pure identity/check-in/verdict/hint logic, unit tested directly
     camera.js           camera, location and proximity code shared by /play and /challenge
     challenge.js        DOM/fetch wiring for /challenge, imports challenge-logic.js and camera.js
 docs/          player and moderator guides and the privacy notice, served at

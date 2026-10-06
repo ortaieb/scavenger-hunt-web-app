@@ -115,6 +115,7 @@ The result lists each check, with ✓ for passed and ✗ for failed:
 
 | Check | What it means | What to do |
 | --- | --- | --- |
+| Checked in | You tapped **I'm here** at this checkpoint, and the check-in hadn't run out | **Try again** checks you in afresh |
 | Checkpoint open | The checkpoint was open when you sent the photo | Wait until it opens |
 | Photo is recent | The photo was taken just now | Take a fresh one |
 | Photo time | The photo's time looks right | Check your phone's clock is set automatically |
@@ -150,6 +151,10 @@ recorded but doesn't count.
   open, away from tall buildings and trees, and retake.
 - **"You may be outside the checkpoint area."** Only a hint: you can still
   send the photo. Moving closer gives you a better chance.
+- **"Your check-in ran out. Tap Send to try again."** The check-in ran out
+  while your photo was sending, or another phone in your team sent a photo
+  first. The game has checked you in again and kept your photo: tap
+  **Send**.
 - **You reloaded the page.** You're still in your team. If you were taking a
   photo, tap **I'm here** again for a new code.
 - **You switched phones.** Join with the same team code on the new phone.

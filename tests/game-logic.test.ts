@@ -19,6 +19,10 @@ import {
   teamLabel,
   timeLeftFor,
   checkpointAfterArrive,
+  checkpointAfterCheckIn,
+  challengeErrorFor,
+  CHECK_IN_RAN_OUT,
+  onlyCheckInFailed,
   finishedSummary,
   sessionOverSummary,
   sessionRejectionFor,
@@ -662,6 +666,167 @@ describe('playing a checkpoint', () => {
     });
   });
 
+  describe('a photo refused only for its check-in (game-server#61)', () => {
+    const sending = { step: 'sending' as const, sequence: 2, code: issued };
+    const CHECK_IN_MESSAGES: Record<string, string> = {
+      check_in_expired: "Your check-in ran out. Tap I'm here again, then send your photo.",
+      not_checked_in: "Tap I'm here at the checkpoint before sending a photo.",
+    };
+
+    /**
+     * A real POST /challenge body for a photo whose `checked_in` failed: the
+     * referee isn't consulted, so the visual checks are skipped. `alsoOutOfRange`
+     * fails the geofence too.
+     */
+    function checkInVerdict(code: string, { alsoOutOfRange = false } = {}) {
+      const rejections = [{ code, message: CHECK_IN_MESSAGES[code] }];
+      if (alsoOutOfRange) {
+        rejections.push({ code: 'out_of_range', message: "You're not inside the checkpoint area." });
+      }
+      return JSON.stringify({
+        verdict: {
+          game: identity.session.id,
+          participant: identity.participant,
+          checkpoint: {
+            sequence: 2,
+            attempt: 3,
+            time: '2026-10-03T09:52:00Z',
+            verdict: 'failed',
+            checks: [
+              { check: 'session_running', outcome: 'passed', confidence: 1, reason: 'The session is running.' },
+              { check: 'checked_in', outcome: 'failed', confidence: 1, reason: CHECK_IN_MESSAGES[code] },
+              { check: 'window_open', outcome: 'passed', confidence: 1, reason: 'Open.' },
+              { check: 'capture_fresh', outcome: 'passed', confidence: 1, reason: 'Recent.' },
+              { check: 'capture_time_plausible', outcome: 'passed', confidence: 1, reason: 'Plausible.' },
+              alsoOutOfRange
+                ? { check: 'in_range', outcome: 'failed', confidence: 1, reason: "You're not inside the checkpoint area." }
+                : { check: 'in_range', outcome: 'passed', confidence: 1, reason: 'Inside.' },
+              { check: 'photo_unique', outcome: 'passed', confidence: 1, reason: 'New.' },
+              { check: 'scene_matches', outcome: 'skipped', confidence: 0, reason: 'Not checked for this attempt.' },
+              { check: 'pose_correct', outcome: 'skipped', confidence: 0, reason: 'Not checked for this attempt.' },
+            ],
+            rejections,
+          },
+        },
+        image_id: 'img-3',
+      });
+    }
+
+    it.each(['check_in_expired', 'not_checked_in'])(
+      'a %s alone checks in again and goes back to Review, keeping the photo',
+      (code) => {
+        const body = checkInVerdict(code);
+        expect(onlyCheckInFailed(body)).toBe(true);
+        expect(challengeErrorFor(200, body)).toBeNull();
+
+        const { checkpoint, error } = checkpointAfterCheckIn(sending, 201, { ...arriveBody, code: '6034' });
+
+        expect(error).toBeNull();
+        expect(checkpoint).toEqual({
+          step: 'photo',
+          sequence: 2,
+          code: { ...issued, value: '6034' },
+          message: 'Your check-in ran out. Tap Send to try again.',
+        });
+        expect(checkpoint?.message).toBe(CHECK_IN_RAN_OUT);
+        expect(screenFor(app(checkpoint))).toBe('review');
+      },
+    );
+
+    it('keeps the photo when the server returns the check-in it already has (200)', () => {
+      const { checkpoint } = checkpointAfterCheckIn(sending, 200, arriveBody);
+
+      expect(checkpoint?.code).toEqual(issued);
+      expect(screenFor(app(checkpoint))).toBe('review');
+    });
+
+    it.each(['check_in_expired', 'not_checked_in'])(
+      'a %s with another failed check goes to the Verdict screen as before',
+      (code) => {
+        const body = checkInVerdict(code, { alsoOutOfRange: true });
+        expect(onlyCheckInFailed(body)).toBe(false);
+
+        const checkpoint = checkpointAfterVerdict(sending, 200, body);
+
+        expect(screenFor(app(checkpoint))).toBe('verdict');
+        expect(verdictHeading(checkpoint)).toBe('✗ Not quite');
+        expect(checkpoint.display?.checklist).toContainEqual({
+          icon: '✗',
+          label: 'Checked in',
+          reason: CHECK_IN_MESSAGES[code],
+        });
+      },
+    );
+
+    it('is not a check-in problem for a pass, an ordinary failure or a non-verdict body', () => {
+      expect(onlyCheckInFailed(verdictBody('pass'))).toBe(false);
+      expect(onlyCheckInFailed(verdictBody('pending'))).toBe(false);
+      expect(onlyCheckInFailed(verdictBody('failed'))).toBe(false);
+      expect(onlyCheckInFailed(verdictBody('failed', { rejections: [] }))).toBe(false);
+      expect(onlyCheckInFailed('{"error":"The game server took too long to respond"}')).toBe(false);
+      expect(onlyCheckInFailed('not json')).toBe(false);
+    });
+
+    it('is not a check-in problem when another check failed without a rejection of its own', () => {
+      const body = verdictBody('failed', {
+        checks: [
+          { check: 'checked_in', outcome: 'failed', confidence: 1, reason: 'Ran out.' },
+          { check: 'pose_correct', outcome: 'failed', confidence: 0.9, reason: 'Pose.' },
+        ],
+        rejections: [{ code: 'check_in_expired', message: 'Ran out.' }],
+      });
+
+      expect(onlyCheckInFailed(body)).toBe(false);
+    });
+
+    it.each([
+      ['session_stopped', 'ended'],
+      ['session_not_started', 'lobby'],
+      ['hunt_finished', 'finished'],
+      ['checkpoint_closed', 'clue'],
+    ])('routes a refused check-in by its code: %s → %s', (code, screen) => {
+      const { error } = checkpointAfterCheckIn(sending, 409, { detail: '…', code });
+
+      expect(error?.screen).toBe(screen);
+      expect(error?.reload).toBe(true);
+    });
+
+    it('stays on Review with the photo when the check-in is refused without moving on', () => {
+      const plain = checkpointAfterCheckIn(sending, 409, { detail: 'not your current checkpoint' });
+      expect(screenFor(app(plain.checkpoint))).toBe('review');
+      expect(plain.checkpoint?.message).toContain("Couldn't check in");
+
+      const moved = checkpointAfterCheckIn(sending, 409, { detail: '…', code: 'not_current_checkpoint' });
+      expect(moved.error).toMatchObject({ screen: null, reload: true });
+      expect(screenFor(app(moved.checkpoint))).toBe('review');
+      expect(moved.checkpoint?.message).toBe(CHECK_IN_RAN_OUT);
+    });
+
+    it('keeps the photo with no connection, for Send to check in again', () => {
+      const { checkpoint, error } = checkpointAfterCheckIn(sending, 0, null);
+
+      expect(error?.offline).toBe(true);
+      expect(checkpoint).toMatchObject({ step: 'photo', code: issued, message: CHECK_IN_RAN_OUT });
+    });
+  });
+
+  describe('a 404 from POST /challenge', () => {
+    it('goes back to Join and forgets the identity, like /state', () => {
+      const error = challengeErrorFor(404, '{"detail":"unknown participant"}');
+
+      expect(error).toEqual(screenForError(404, { detail: 'unknown participant' }));
+      expect(error?.screen).toBe('join');
+      expect(error?.forgetIdentity).toBe(true);
+    });
+
+    it('leaves verdicts and failed sends to checkpointAfterVerdict', () => {
+      expect(challengeErrorFor(200, verdictBody('failed'))).toBeNull();
+      expect(challengeErrorFor(202, verdictBody('pending'))).toBeNull();
+      expect(challengeErrorFor(504, '{"error":"The game server took too long to respond"}')).toBeNull();
+      expect(challengeErrorFor(0, '')).toBeNull();
+    });
+  });
+
   describe('code expiry', () => {
     const capture = { step: 'code' as const, sequence: 2, code: issued };
     const expires = Date.parse(issued.expiresAt);
@@ -807,6 +972,11 @@ describe('finished, session over and errors (issue #43)', () => {
       ]);
 
       expect(sessionRejectionFor(body)?.screen).toBe(screen);
+    });
+
+    it('is routed the same way by challengeErrorFor', () => {
+      const body = photoVerdict([{ code: 'session_stopped', message: 'Over.' }]);
+      expect(challengeErrorFor(200, body)).toEqual(sessionRejectionFor(body));
     });
 
     it('is null for an ordinary failed verdict, a pass and a non-verdict body', () => {
