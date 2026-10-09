@@ -2,10 +2,14 @@
 // unit-tested with Vitest like moderator-logic.js. It checks the New design
 // form against the game-server's limits, and describes what the designer
 // API says: the drafts, a running draft's progress, why a draft failed, and
-// a ready draft's checkpoints.
+// a ready draft's checkpoints. Reviewing and publishing a ready draft (issue
+// #60) live here too: the edit limits and the changed fields, which field a
+// problem is about, the review counts and the loop over the accepted
+// checkpoints, the "can publish" rule, and the publish form.
 //
-// A draft's clues, scenes and coordinates are the answers to its hunt: this
-// file only shapes them for the screen. Nothing here stores or logs them.
+// A draft's clues, scenes and coordinates are the answers to its hunt, and
+// a publication's codes are credentials: this file only shapes them for the
+// screen. Nothing here stores or logs them.
 
 import { formatCountdown } from './game-logic.js';
 
@@ -14,14 +18,16 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /**
  * @typedef {{ area: string, theme: string, checkpoints: number, 'max-walk-km': number }} DesignRequest
  * @typedef {{ at: string, step: string, summary: string }} ProgressEntry
+ * @typedef {{ lat: number, long: number }} Location
  * @typedef {{
  *   position: number,
- *   place: { osm?: string, name: string, kind?: string, location?: { lat: number, long: number } },
+ *   place: { osm?: string, name: string, kind?: string, location?: Location },
  *   clue: string,
  *   challenge: { scene: string, pose: string },
  *   proximity?: number,
  *   rationale?: string,
  *   review?: string,
+ *   edited?: boolean,
  * }} DraftCheckpoint
  * @typedef {{ code: string, position: number | null, message: string }} DraftProblem
  * @typedef {{
@@ -43,6 +49,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  *   problems?: DraftProblem[],
  *   run?: DraftRun,
  *   attribution?: string,
+ *   published?: { session: string, at: string } | null,
  *   'created-at': string,
  *   'finished-at'?: string | null,
  * }} Draft
@@ -368,8 +375,9 @@ export function elapsedLine(draft, serverNow) {
 }
 
 /**
- * How long a finished draft's run took and what it cost: "Took 3:41 · cost
- * $0.42". '' while it's running.
+ * How long a finished draft's run took, its turns and what it cost: "Took
+ * 3:41 · 23 turns · cost $0.42". The stub runner takes no turns, so none are
+ * shown for it. '' while it's running.
  *
  * @param {Draft | null | undefined} draft
  * @returns {string}
@@ -386,6 +394,10 @@ export function runLine(draft) {
     parts.push(`Took ${formatCountdown(durationMs)}`);
   } else if (Number.isFinite(start) && Number.isFinite(end) && end >= start) {
     parts.push(`Took ${formatCountdown(end - start)}`);
+  }
+  const turns = draft.run?.turns;
+  if (typeof turns === 'number' && Number.isInteger(turns) && turns > 0) {
+    parts.push(turns === 1 ? '1 turn' : `${turns} turns`);
   }
   const cost = costWords(draft.run?.['cost-usd']);
   if (cost) {
@@ -428,13 +440,30 @@ export function failureText(draft) {
  * @returns {string[]}
  */
 export function problemLines(draft) {
-  const problems = Array.isArray(draft?.problems) ? draft.problems : [];
-  return problems
-    .filter((problem) => problem && typeof problem === 'object')
+  return linesOf(draft?.problems);
+}
+
+/**
+ * @param {unknown} problem
+ * @returns {string} the problem's message, or its code when it has none
+ */
+function messageOf(problem) {
+  if (!problem || typeof problem !== 'object') {
+    return '';
+  }
+  const { message, code } = /** @type {Partial<DraftProblem>} */ (problem);
+  return typeof message === 'string' && message ? message : typeof code === 'string' ? code : '';
+}
+
+/**
+ * @param {unknown} problems
+ * @returns {string[]} "Checkpoint 2: …" for each problem, or its message alone
+ */
+function linesOf(problems) {
+  return (Array.isArray(problems) ? problems : [])
     .map((problem) => {
-      const message =
-        typeof problem.message === 'string' && problem.message ? problem.message : String(problem.code ?? '');
-      return Number.isInteger(problem.position) ? `Checkpoint ${problem.position}: ${message}` : message;
+      const message = messageOf(problem);
+      return message && Number.isInteger(problem.position) ? `Checkpoint ${problem.position}: ${message}` : message;
     })
     .filter(Boolean);
 }
@@ -442,23 +471,637 @@ export function problemLines(draft) {
 // --- a ready draft -------------------------------------------------------------
 
 /**
- * A ready draft's checkpoints, in route order, read-only: the place's
- * name, the clue and the pose.
+ * @param {Draft | null | undefined} draft
+ * @returns {DraftCheckpoint[]} the draft's checkpoints in route order
+ */
+function inRouteOrder(draft) {
+  const checkpoints = Array.isArray(draft?.checkpoints) ? draft.checkpoints : [];
+  return checkpoints
+    .filter((checkpoint) => checkpoint && typeof checkpoint === 'object' && Number.isInteger(checkpoint.position))
+    .sort((a, b) => a.position - b.position);
+}
+
+/**
+ * A published draft's hunt, read-only: its accepted checkpoints, numbered
+ * 1…n in route order as the session numbers them, with the place's name,
+ * the clue and the pose.
  *
  * @param {Draft | null | undefined} draft
  * @returns {{ position: number, name: string, clue: string, pose: string }[]}
  */
-export function checkpointRows(draft) {
-  const checkpoints = Array.isArray(draft?.checkpoints) ? draft.checkpoints : [];
-  return checkpoints
-    .filter((checkpoint) => checkpoint && typeof checkpoint === 'object')
-    .map((checkpoint, index) => ({
-      position: Number.isInteger(checkpoint.position) ? checkpoint.position : index + 1,
-      name: typeof checkpoint.place?.name === 'string' ? checkpoint.place.name : '',
-      clue: typeof checkpoint.clue === 'string' ? checkpoint.clue : '',
-      pose: typeof checkpoint.challenge?.pose === 'string' ? checkpoint.challenge.pose : '',
-    }))
-    .sort((a, b) => a.position - b.position);
+export function publishedRows(draft) {
+  return inRouteOrder(draft)
+    .filter((checkpoint) => checkpoint.review === 'accepted')
+    .map((checkpoint, index) => ({ ...rowOf(checkpoint), position: index + 1 }));
+}
+
+/** @param {DraftCheckpoint} checkpoint */
+function rowOf(checkpoint) {
+  return {
+    position: checkpoint.position,
+    name: textOf(checkpoint.place?.name),
+    clue: textOf(checkpoint.clue),
+    pose: textOf(checkpoint.challenge?.pose),
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+function textOf(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+/**
+ * What a finished draft found, for its header: the area's name ("(clipped)"
+ * when it was cut down to a walkable size) and the loop's length, e.g.
+ * "Chiswick, London, England · loop 1.41 km".
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {string}
+ */
+export function draftFacts(draft) {
+  const parts = [];
+  const name = draft?.area?.name;
+  if (typeof name === 'string' && name) {
+    parts.push(draft?.area?.clipped ? `${name} (clipped)` : name);
+  }
+  const loop = draft?.route?.['loop-m'];
+  if (typeof loop === 'number' && Number.isFinite(loop) && loop > 0) {
+    parts.push(`loop ${distanceWords(loop)}`);
+  }
+  return parts.join(' · ');
+}
+
+// --- reviewing a checkpoint ------------------------------------------------------
+
+/**
+ * The game-server's limits for a checkpoint's text, in characters, and for
+ * its check-in radius, in metres: what an edit is held to.
+ */
+export const CHECKPOINT_LIMITS = Object.freeze({
+  clue: { min: 1, max: 300 },
+  pose: { min: 1, max: 200 },
+  scene: { min: 1, max: 1000 },
+  proximity: { min: 20, max: 100 },
+});
+
+/** A checkpoint's text fields, in the order a card shows them. */
+export const TEXT_FIELDS = Object.freeze(/** @type {const} */ (['clue', 'pose', 'scene']));
+
+/**
+ * @typedef {'clue' | 'pose' | 'scene'} TextField
+ * @typedef {TextField | 'proximity'} EditField
+ * @typedef {Record<EditField, string>} CheckpointForm a card's fields, as typed
+ * @typedef {Partial<{ clue: string, pose: string, scene: string, proximity: number }>} CheckpointEdit
+ */
+
+/**
+ * A text's length as the game-server counts it, in characters (code
+ * points) rather than UTF-16 units, so an emoji counts once.
+ *
+ * @param {unknown} text
+ * @returns {number}
+ */
+export function charCount(text) {
+  return [...String(text ?? '')].length;
+}
+
+/**
+ * The counter under a text field: "123 / 300", and whether it's over.
+ *
+ * @param {TextField} field
+ * @param {string} value
+ * @returns {{ text: string, over: boolean }}
+ */
+export function counter(field, value) {
+  const { max } = CHECKPOINT_LIMITS[field];
+  const count = charCount(value);
+  return { text: `${count} / ${max}`, over: count > max };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {number} NaN unless it's a plain whole number
+ */
+function parseWhole(value) {
+  const trimmed = String(value ?? '').trim();
+  return /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
+}
+
+/**
+ * What's wrong with a field, checked in the page against the game-server's
+ * limits: '' when it's fine. The game-server checks the rest (a clue or
+ * pose that names the place) when it's saved.
+ *
+ * @param {EditField} field
+ * @param {string} value as typed
+ * @returns {string}
+ */
+export function fieldError(field, value) {
+  if (field === 'proximity') {
+    const { min, max } = CHECKPOINT_LIMITS.proximity;
+    const radius = parseWhole(value);
+    return radius >= min && radius <= max ? '' : `Choose a whole number of metres from ${min} to ${max}.`;
+  }
+  const { max } = CHECKPOINT_LIMITS[field];
+  const text = String(value ?? '');
+  if (text.trim() === '') {
+    return `The ${field} can't be empty.`;
+  }
+  return charCount(text) > max ? `Keep the ${field} to ${max} characters or fewer.` : '';
+}
+
+/**
+ * A checkpoint as saved, in the shape of a card's fields.
+ *
+ * @param {DraftCheckpoint | null | undefined} checkpoint
+ * @returns {CheckpointForm}
+ */
+export function formFromCheckpoint(checkpoint) {
+  return {
+    clue: textOf(checkpoint?.clue),
+    pose: textOf(checkpoint?.challenge?.pose),
+    scene: textOf(checkpoint?.challenge?.scene),
+    proximity: typeof checkpoint?.proximity === 'number' ? String(checkpoint.proximity) : '',
+  };
+}
+
+/**
+ * What Save sends: only the fields that differ from the checkpoint as saved.
+ * The radius goes as a number (NaN when it isn't a whole number, which
+ * validateEdit catches).
+ *
+ * @param {DraftCheckpoint | null | undefined} checkpoint
+ * @param {CheckpointForm} form
+ * @returns {CheckpointEdit}
+ */
+export function changedFields(checkpoint, form) {
+  const saved = formFromCheckpoint(checkpoint);
+  /** @type {CheckpointEdit} */
+  const changes = {};
+  for (const field of TEXT_FIELDS) {
+    if (form[field] !== saved[field]) {
+      changes[field] = form[field];
+    }
+  }
+  const radius = parseWhole(form.proximity);
+  if (radius !== checkpoint?.proximity && !(saved.proximity === '' && String(form.proximity).trim() === '')) {
+    changes.proximity = radius;
+  }
+  return changes;
+}
+
+/**
+ * Save, checked in the page: the changed fields, and what's wrong with any
+ * of them.
+ *
+ * @param {DraftCheckpoint | null | undefined} checkpoint
+ * @param {CheckpointForm} form
+ * @returns {{ changes: CheckpointEdit, errors: Partial<Record<EditField, string>> }}
+ */
+export function validateEdit(checkpoint, form) {
+  const changes = changedFields(checkpoint, form);
+  /** @type {Partial<Record<EditField, string>>} */
+  const errors = {};
+  for (const field of /** @type {EditField[]} */ (Object.keys(changes))) {
+    const message = fieldError(field, form[field]);
+    if (message) {
+      errors[field] = message;
+    }
+  }
+  return { changes, errors };
+}
+
+/**
+ * Which field a problem from the game-server is about, so it's shown under
+ * that field: `bad_proximity` under the radius; `names_place` (the clue or
+ * the pose), `empty` and `too_long` under the field their message names.
+ * null for a problem about the whole checkpoint or draft.
+ *
+ * @param {unknown} problem
+ * @returns {EditField | null}
+ */
+export function problemField(problem) {
+  const code = problem && typeof problem === 'object' && 'code' in problem ? problem.code : undefined;
+  if (code === 'bad_proximity') {
+    return 'proximity';
+  }
+  if (code !== 'names_place' && code !== 'empty' && code !== 'too_long') {
+    return null;
+  }
+  // "Checkpoint 2's clue gives the place away (…)", "Checkpoint 2's scene
+  // is 1200 characters; …": the field comes before anything quoted.
+  const message = messageOf(problem);
+  const match = /'s (clue|pose|scene)\b/.exec(message) ?? /\b(clue|pose|scene)\b/.exec(message);
+  return match ? /** @type {TextField} */ (match[1]) : null;
+}
+
+/**
+ * A 422's problems for one card, by the field each is shown under, and
+ * `card` for the rest.
+ *
+ * @param {unknown} problems
+ * @returns {Record<EditField | 'card', string[]>}
+ */
+export function problemsByField(problems) {
+  /** @type {Record<EditField | 'card', string[]>} */
+  const byField = { clue: [], pose: [], scene: [], proximity: [], card: [] };
+  for (const problem of Array.isArray(problems) ? problems : []) {
+    const message = messageOf(problem);
+    if (message) {
+      byField[problemField(problem) ?? 'card'].push(message);
+    }
+  }
+  return byField;
+}
+
+/** The organiser's review of a checkpoint, in words. */
+export const REVIEW_WORDS = Object.freeze({
+  pending: 'To review',
+  accepted: 'Accepted',
+  rejected: 'Rejected',
+});
+
+/**
+ * @param {DraftCheckpoint | null | undefined} checkpoint
+ * @returns {'pending' | 'accepted' | 'rejected'}
+ */
+export function reviewOf(checkpoint) {
+  const review = checkpoint?.review;
+  return review === 'accepted' || review === 'rejected' ? review : 'pending';
+}
+
+/**
+ * @param {string} osm a place's OpenStreetMap id, e.g. "node/123"
+ * @returns {string | null} its page on openstreetmap.org
+ */
+export function osmUrl(osm) {
+  const match = /^(node|way|relation)\/(\d+)$/.exec(typeof osm === 'string' ? osm : '');
+  return match ? `https://www.openstreetmap.org/${match[1]}/${match[2]}` : null;
+}
+
+/**
+ * A place's kind in words: "historic=memorial" is "historic · memorial".
+ *
+ * @param {unknown} kind
+ * @returns {string}
+ */
+export function kindWords(kind) {
+  return typeof kind === 'string' ? kind.replace('=', ' · ').replaceAll('_', ' ') : '';
+}
+
+/**
+ * A ready draft's checkpoints as review cards, in route order: the place,
+ * why the agent chose it, its link on OpenStreetMap, its review, whether
+ * its text was edited, and its fields as saved.
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {{
+ *   position: number,
+ *   name: string,
+ *   kind: string,
+ *   rationale: string,
+ *   osmUrl: string | null,
+ *   review: 'pending' | 'accepted' | 'rejected',
+ *   edited: boolean,
+ *   form: CheckpointForm,
+ * }[]}
+ */
+export function reviewCards(draft) {
+  return inRouteOrder(draft).map((checkpoint) => ({
+    position: checkpoint.position,
+    name: textOf(checkpoint.place?.name),
+    kind: kindWords(checkpoint.place?.kind),
+    rationale: textOf(checkpoint.rationale),
+    osmUrl: osmUrl(textOf(checkpoint.place?.osm)),
+    review: reviewOf(checkpoint),
+    edited: checkpoint.edited === true,
+    form: formFromCheckpoint(checkpoint),
+  }));
+}
+
+// --- the summary bar -------------------------------------------------------------
+
+/**
+ * @param {unknown} checkpoints
+ * @returns {{ accepted: number, rejected: number, pending: number }}
+ */
+export function reviewCounts(checkpoints) {
+  const counts = { accepted: 0, rejected: 0, pending: 0 };
+  for (const checkpoint of Array.isArray(checkpoints) ? checkpoints : []) {
+    if (checkpoint && typeof checkpoint === 'object') {
+      counts[reviewOf(checkpoint)] += 1;
+    }
+  }
+  return counts;
+}
+
+// The game-server's Earth radius (IUGG mean), so the page's loop matches its.
+const EARTH_RADIUS_M = 6_371_008.8;
+
+/**
+ * @param {unknown} location
+ * @returns {location is Location}
+ */
+function isLocation(location) {
+  return (
+    Boolean(location) &&
+    typeof location === 'object' &&
+    Number.isFinite(/** @type {Location} */ (location).lat) &&
+    Number.isFinite(/** @type {Location} */ (location).long)
+  );
+}
+
+/**
+ * The great-circle distance from a to b, in metres, by the haversine formula
+ * as the game-server works it out.
+ *
+ * @param {Location} a
+ * @param {Location} b
+ * @returns {number}
+ */
+export function distanceM(a, b) {
+  const radians = (degrees) => (degrees * Math.PI) / 180;
+  const latA = radians(a.lat);
+  const latB = radians(b.lat);
+  const dLat = latB - latA;
+  const dLong = radians(b.long - a.long);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(latA) * Math.cos(latB) * Math.sin(dLong / 2) ** 2;
+  return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/**
+ * A closed loop's length, in metres: each place to the next, and the last
+ * back to the first, as every team walks a rotation of it.
+ *
+ * @param {Location[]} locations in route order
+ * @returns {number}
+ */
+export function loopM(locations) {
+  if (locations.length < 2) {
+    return 0;
+  }
+  return locations.reduce((total, location, index) => total + distanceM(location, locations[(index + 1) % locations.length]), 0);
+}
+
+/**
+ * The loop over the accepted checkpoints only, in route order, as the hunt
+ * would be published: null with fewer than 2 to make one.
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {number | null}
+ */
+export function acceptedLoopM(draft) {
+  const locations = inRouteOrder(draft)
+    .filter((checkpoint) => checkpoint.review === 'accepted')
+    .map((checkpoint) => checkpoint.place?.location)
+    .filter(isLocation);
+  return locations.length < 2 ? null : loopM(locations);
+}
+
+/**
+ * "850 m", or "1.41 km" from 1 km up.
+ *
+ * @param {number} metres
+ * @returns {string}
+ */
+export function distanceWords(metres) {
+  return metres < 1000 ? `${Math.round(metres)} m` : `${(metres / 1000).toFixed(2)} km`;
+}
+
+/**
+ * The summary bar: the review counts, and the loop over the accepted
+ * checkpoints against the longest walk asked for. A ready draft's whole
+ * loop is within that walk, and leaving checkpoints out only shortens it.
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {{ accepted: number, rejected: number, pending: number, loop: string }}
+ */
+export function reviewSummary(draft) {
+  const loop = acceptedLoopM(draft);
+  const maxWalkKm = draft?.request?.['max-walk-km'];
+  const limit = typeof maxWalkKm === 'number' ? ` (up to ${maxWalkKm} km)` : '';
+  return {
+    ...reviewCounts(draft?.checkpoints),
+    loop: loop === null ? 'Accept checkpoints to see the loop' : `Loop of the accepted: ${distanceWords(loop)}${limit}`,
+  };
+}
+
+// --- publishing ---------------------------------------------------------------------
+
+/** The game-server publishes a hunt of at least this many accepted checkpoints. */
+export const MIN_ACCEPTED = 3;
+
+/**
+ * @param {number} count
+ * @param {string} one
+ * @returns {string} "1 checkpoint", "2 checkpoints"
+ */
+function plural(count, one) {
+  return `${count} ${one}${count === 1 ? '' : 's'}`;
+}
+
+/**
+ * Whether Publish hunt is enabled, and if not, what's missing: nothing
+ * still to review, and at least 3 checkpoints accepted. `unsaved` are the
+ * cards with changes not yet saved, which would be lost.
+ *
+ * @param {Draft | null | undefined} draft
+ * @param {number[]} [unsaved] the positions of cards with unsaved changes
+ * @returns {{ ok: boolean, message: string }}
+ */
+export function publishReadiness(draft, unsaved = []) {
+  if (draft?.status === 'published') {
+    return { ok: false, message: 'This draft is already published.' };
+  }
+  if (draft?.status !== 'ready') {
+    return { ok: false, message: 'Only a ready draft can be published.' };
+  }
+  const { accepted, pending } = reviewCounts(draft.checkpoints);
+  const missing = [];
+  if (pending > 0) {
+    missing.push(`Accept or reject every checkpoint: ${plural(pending, 'checkpoint')} still to review.`);
+  }
+  if (accepted < MIN_ACCEPTED) {
+    missing.push(
+      pending > 0
+        ? `At least ${MIN_ACCEPTED} must be accepted (${accepted} so far).`
+        : `At least ${MIN_ACCEPTED} must be accepted, and ${accepted} ${accepted === 1 ? 'is' : 'are'}: undo a rejection to accept it.`,
+    );
+  }
+  if (unsaved.length > 0) {
+    const which = [...unsaved].sort((a, b) => a - b).join(', ');
+    missing.push(`Save your changes to checkpoint ${which} first.`);
+  }
+  return { ok: missing.length === 0, message: missing.join(' ') };
+}
+
+/** The game-server's limits for the publish form. */
+export const PUBLISH_LIMITS = Object.freeze({
+  name: { min: 1, max: 100 },
+  teams: { min: 1, max: 10 },
+  teamName: { min: 1, max: 40 },
+});
+
+/**
+ * @param {number} value
+ * @param {number} [width]
+ * @returns {string}
+ */
+function pad(value, width = 2) {
+  return String(value).padStart(width, '0');
+}
+
+/**
+ * A `datetime-local` value ("2026-10-11T10:00") as ISO 8601 with a UTC
+ * offset ("2026-10-11T10:00:00+01:00"), as the game-server needs. The
+ * offset is the browser's own on that date, so summer time is right.
+ *
+ * @param {string} value
+ * @param {number} [offsetMinutes] minutes ahead of UTC, instead of the browser's
+ * @returns {string | null} null unless it's a real date and time
+ */
+export function localToIso(value, offsetMinutes) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?$/.exec(String(value ?? '').trim());
+  if (!match) {
+    return null;
+  }
+  const [year, month, day, hour, minute, second] = match.slice(1).map((part) => Number(part ?? 0));
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return null;
+  }
+  if (hour > 23 || minute > 59 || second > 59) {
+    return null;
+  }
+  const offset = offsetMinutes ?? -new Date(year, month - 1, day, hour, minute, second).getTimezoneOffset();
+  const sign = offset < 0 ? '-' : '+';
+  const abs = Math.abs(offset);
+  return (
+    `${pad(year, 4)}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:${pad(second)}` +
+    `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+  );
+}
+
+/**
+ * The team names, checked as the game-server checks them: 1 to 10 names, each
+ * 1 to 40 characters once trimmed, and no two the same ignoring case.
+ *
+ * @param {string[]} names one per row, as typed
+ * @returns {{ teams: string[] | null, rows: string[], error: string }} `teams`
+ *   trimmed, or null when anything is wrong; `rows` each row's error ('' when
+ *   it's fine); `error` about the list as a whole
+ */
+export function validateTeams(names) {
+  const list = (Array.isArray(names) ? names : []).map((name) => String(name ?? '').trim());
+  const { teams: count, teamName } = PUBLISH_LIMITS;
+  /** @type {Map<string, number>} */
+  const seen = new Map();
+  const rows = list.map((name, index) => {
+    if (charCount(name) < teamName.min) {
+      return 'Enter a team name, or remove this row.';
+    }
+    if (charCount(name) > teamName.max) {
+      return `Keep the name to ${teamName.max} characters or fewer.`;
+    }
+    const key = name.toLowerCase();
+    const first = seen.get(key);
+    if (first !== undefined) {
+      return `Team ${first + 1} has the same name. Each team needs its own, whatever the capitals.`;
+    }
+    seen.set(key, index);
+    return '';
+  });
+  let error = '';
+  if (list.length < count.min) {
+    error = 'Add at least one team.';
+  } else if (list.length > count.max) {
+    error = `Keep it to ${count.max} teams or fewer.`;
+  }
+  return { teams: error || rows.some(Boolean) ? null : list, rows, error };
+}
+
+/**
+ * The publish form, as typed.
+ *
+ * @typedef {{ name: string, start: string, end: string, teams: string[] }} PublishForm
+ * @typedef {{ name: string, 'start-time': string, 'end-time': string, teams: string[] }} PublishRequest
+ * @typedef {Partial<Record<'name' | 'start' | 'end' | 'teams', string>>} PublishErrors
+ */
+
+/**
+ * Checks the publish form against the game-server's rules, so a bad value is
+ * caught in the page.
+ *
+ * @param {PublishForm} form
+ * @param {number} [offsetMinutes] minutes ahead of UTC, instead of the browser's
+ * @returns {{ request: PublishRequest | null, errors: PublishErrors, teamRows: string[] }}
+ *   `request` is what to post, or null when anything is wrong
+ */
+export function validatePublish(form, offsetMinutes) {
+  const name = String(form.name ?? '').trim();
+  const start = localToIso(form.start, offsetMinutes);
+  const end = localToIso(form.end, offsetMinutes);
+  const teams = validateTeams(form.teams);
+
+  /** @type {PublishErrors} */
+  const errors = {};
+  if (charCount(name) < PUBLISH_LIMITS.name.min) {
+    errors.name = "Enter the hunt's name.";
+  } else if (charCount(name) > PUBLISH_LIMITS.name.max) {
+    errors.name = `Keep the name to ${PUBLISH_LIMITS.name.max} characters or fewer.`;
+  }
+  if (start === null) {
+    errors.start = 'Choose when it starts.';
+  }
+  if (end === null) {
+    errors.end = 'Choose when it ends.';
+  } else if (start !== null && Date.parse(end) <= Date.parse(start)) {
+    errors.end = 'It must end after it starts.';
+  }
+  if (teams.error) {
+    errors.teams = teams.error;
+  }
+
+  if (Object.keys(errors).length > 0 || teams.teams === null || start === null || end === null) {
+    return { request: null, errors, teamRows: teams.rows };
+  }
+  return { request: { name, 'start-time': start, 'end-time': end, teams: teams.teams }, errors, teamRows: teams.rows };
+}
+
+/**
+ * A publication, checked and shaped for the screen: the session, the
+ * moderator's link and code, and each team's join code. null when the body
+ * isn't one.
+ *
+ * @param {unknown} body the publish response, or GET …/publication
+ * @returns {{
+ *   session: string,
+ *   name: string,
+ *   moderatorPath: string,
+ *   moderatorCode: string,
+ *   teams: { name: string, code: string }[],
+ * } | null}
+ */
+export function publicationView(body) {
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+  const { session, name, teams } = /** @type {Record<string, unknown>} */ (body);
+  if (typeof session !== 'string' || !UUID_RE.test(session)) {
+    return null;
+  }
+  return {
+    session,
+    name: textOf(name),
+    moderatorPath: `/moderator?${new URLSearchParams({ session })}`,
+    moderatorCode: textOf(/** @type {Record<string, unknown>} */ (body)['moderator-code']),
+    teams: (Array.isArray(teams) ? teams : [])
+      .filter((team) => team && typeof team === 'object' && typeof team.name === 'string' && typeof team['join-code'] === 'string')
+      .map((team) => ({ name: team.name, code: team['join-code'] })),
+  };
 }
 
 // --- errors --------------------------------------------------------------------
@@ -506,4 +1149,116 @@ export function designerError(status, body) {
     return { ...error, message: 'No connection to the game server.', offline: true };
   }
   return { ...error, message: `Something went wrong (error ${status}).` };
+}
+
+/**
+ * A 422's validation errors (FastAPI's `detail` list), each as "teams 2:
+ * String should have at most 40 characters". The game-server never echoes
+ * a submitted value in them.
+ *
+ * @param {unknown} body
+ * @returns {string[]}
+ */
+function validationLines(body) {
+  const detail = body && typeof body === 'object' && 'detail' in body ? body.detail : undefined;
+  if (!Array.isArray(detail)) {
+    return [];
+  }
+  return detail
+    .filter((item) => item && typeof item === 'object' && typeof item.msg === 'string')
+    .map((item) => {
+      const message = item.msg.replace(/^Value error, /, '');
+      const where = (Array.isArray(item.loc) ? item.loc : [])
+        .filter((part) => part !== 'body')
+        .map((part) => (typeof part === 'number' ? String(part + 1) : String(part)))
+        .join(' ');
+      return where ? `${where}: ${message}` : message;
+    });
+}
+
+/**
+ * @typedef {DesignerError & {
+ *   problems: Record<EditField | 'card', string[]> | null,
+ *   reload: boolean,
+ * }} EditError
+ */
+
+/**
+ * What a failed edit, accept, reject or undo means for its card: a 422's
+ * problems by the field each is shown under, or a message for the card.
+ * `reload` when the draft has changed under the page (it was published, or
+ * the checkpoint is gone), so it should be read again.
+ *
+ * @param {number} status 0 for a call that never came back
+ * @param {unknown} body
+ * @returns {EditError}
+ */
+export function editError(status, body) {
+  const error = { ...designerError(status, body), problems: null, reload: false };
+  const detail = body && typeof body === 'object' && 'detail' in body ? body.detail : undefined;
+  if (status === 422) {
+    const problems = body && typeof body === 'object' && 'problems' in body ? body.problems : undefined;
+    if (Array.isArray(problems)) {
+      return { ...error, message: '', problems: problemsByField(problems) };
+    }
+    const lines = validationLines(body);
+    return { ...error, message: ["The game-server didn't accept this change.", ...lines].join(' ') };
+  }
+  if (status === 409) {
+    return { ...error, message: "This draft can't be edited any more: it may have been published.", reload: true };
+  }
+  if (status === 404) {
+    return {
+      ...error,
+      message: detail === 'unknown checkpoint' ? "This checkpoint isn't in the draft any more." : error.message,
+      reload: true,
+    };
+  }
+  return error;
+}
+
+/**
+ * @typedef {DesignerError & { lines: string[], reload: boolean }} PublishError
+ */
+
+/**
+ * What a failed publish means: the game-server's own reason for a 409 (a
+ * checkpoint still pending, too few accepted, already published), and its
+ * problems or validation errors for a 422, one per line.
+ *
+ * @param {number} status 0 for a call that never came back
+ * @param {unknown} body
+ * @returns {PublishError}
+ */
+export function publishError(status, body) {
+  const error = { ...designerError(status, body), lines: [], reload: false };
+  const detail = body && typeof body === 'object' && 'detail' in body ? body.detail : undefined;
+  if (status === 409) {
+    const reason = typeof detail === 'string' && detail ? ` ${detail}.` : '';
+    return { ...error, message: `The game-server can't publish this draft yet.${reason}`, reload: true };
+  }
+  if (status === 422) {
+    const problems = body && typeof body === 'object' && 'problems' in body ? body.problems : undefined;
+    if (Array.isArray(problems)) {
+      return { ...error, message: 'The accepted checkpoints break a rule:', lines: linesOf(problems) };
+    }
+    return { ...error, message: "The game-server didn't accept the form:", lines: validationLines(body) };
+  }
+  return error;
+}
+
+/**
+ * What a failed GET …/publication means.
+ *
+ * @param {number} status 0 for a call that never came back
+ * @param {unknown} body
+ * @returns {DesignerError}
+ */
+export function publicationError(status, body) {
+  const detail = body && typeof body === 'object' && 'detail' in body ? body.detail : undefined;
+  const error = designerError(status, body);
+  if (status === 404 && detail === 'not published') {
+    return { ...error, message: "The game-server has no publication for this draft." };
+  }
+  return error.offline ? { ...error, message: "No connection to the game server: the codes can't be shown." } : error;
 }

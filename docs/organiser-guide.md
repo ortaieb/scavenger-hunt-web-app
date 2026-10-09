@@ -3,7 +3,8 @@
 You design the hunt before any session exists. You give an area and a theme,
 and the **hunt designer**, an AI agent on the game-server, picks real places
 from map data, orders them into a walking loop, and writes a clue and a pose
-for each. It takes a few minutes.
+for each. It takes a few minutes. Then you review its work, checkpoint by
+checkpoint, and publish the hunt for teams to join.
 
 ## Starting a design
 
@@ -82,21 +83,99 @@ and 3 are 90 m apart; keep them at least 150 m apart". The rules are:
 **Try again** fills in *New design* with the same request. Change anything
 you like, then **Start design**.
 
-## A ready draft
+## Reviewing a draft
 
-A ready draft lists its checkpoints in walking order, each with the place's
-name, its clue and its pose. Reviewing, editing and publishing it as a
-session aren't on this screen yet.
+The designer's work is for you to approve. A ready draft shows, at the top,
+the area it found, the loop's length, and how long the run took, its turns
+and what it cost. Below that is one card per checkpoint, in walking order.
+
+![A checkpoint card, edited and accepted, with the summary bar](images/designer-review.png)
+
+Each card has:
+
+- **The place**: its name and kind, and *Why this place*, the designer's
+  reason for choosing it. **Open in OpenStreetMap** shows it on the map, in
+  a new tab.
+- **Clue**: shown to players on the clue screen. Up to 300 characters.
+- **Pose**: shown to players at check-in, saying what to do in the photo.
+  Up to 200 characters.
+- **Scene**: what the photo's background should show, for the referee only.
+  Players never see it. Up to 1000 characters.
+- **Check-in radius**: how close, in metres, a team must be to check in.
+  20 to 100.
+
+A counter under each text shows its length against its limit.
+
+To review a checkpoint:
+
+1. **Read it**, and open it on the map if you're not sure of the place.
+2. **Fix what's wrong**: change the text or the radius, then **Save
+   changes**. Only what you changed is sent. While it saves, the card's
+   buttons are disabled. The game-server checks your text against the same
+   rules as the designer's. If it refuses, the reason shows under the field
+   it's about, and nothing is saved. For example, *"Checkpoint 1's clue
+   gives the place away ("lantern"); describe it without its name"*: a clue
+   or pose mustn't contain the place's name, or a distinctive word from it.
+   Once you've saved a change, the card is marked **✎ Edited**.
+3. **Accept** or **Reject** it. **Undo** puts it back to *To review*.
+
+Only the accepted checkpoints go into the hunt. The bar at the bottom of the
+screen counts how many are accepted, rejected and still to review. It also
+shows the loop's length over the accepted checkpoints only, against the
+longest walk you asked for. Leaving checkpoints out makes the loop shorter.
+
+## Publishing
+
+Publishing turns the accepted checkpoints into a session on the game-server,
+which teams can join at once.
+
+**Publish hunt** is enabled once no checkpoint is still to review, at least
+3 are accepted, and every change is saved. Until then, the page says what's
+missing.
+
+Fill in:
+
+- **Hunt name**: up to 100 characters, shown to the teams.
+- **Planned start** and **Planned end**, in your own time. They're for the
+  teams' countdown: the moderator still starts and finishes the session.
+- **Teams**: 1 to 10, each with its own name of up to 40 characters. Names
+  must differ by more than capital letters. **Add a team** adds a row, and
+  **Remove** takes one away.
+
+Then **Publish hunt**. The page asks you to confirm, because publishing
+makes the hunt playable at once, and you can't edit it afterwards.
+
+If the game-server refuses, the page says why: for example, the draft was
+changed or published in another tab since you opened it. The page then
+reads the draft again.
+
+Once it's published, the page shows:
+
+- the **session** id;
+- the **moderator link** (`/moderator?session=…`) and the **moderator
+  code**, for whoever runs the session;
+- each team's **join code**.
+
+Each has a **Copy** button.
+
+![A published hunt, with its moderator link and code and the teams' join codes](images/designer-published.png)
+
+**Send each team only its own code.** Anyone with a code can join as that
+team. Give the moderator link and code only to the moderator.
+
+The codes are fetched from the game-server each time you open the published
+draft, and never kept in the browser. To see them again later, open the
+draft from *Drafts, newest first*.
 
 The places come from [OpenStreetMap](https://www.openstreetmap.org/). Map
 data © OpenStreetMap contributors.
 
 ## Keeping the answers secret
 
-A draft's clues, places and poses are the answers to the hunt. The page
-shows them only to you, with your key. The browser doesn't keep them, and
-the page's address holds only the draft's id. Don't show the screen to
-players.
+A draft's clues, places, poses and scenes are the answers to the hunt, and
+the join and moderator codes let anyone into it. The page shows them only to
+you, with your key. The browser doesn't keep them, and the page's address
+holds only the draft's id. Don't show the screen to players.
 
 If the page says *That organiser key isn't right*, the key was mistyped or
 has changed on the game-server: enter it again. *No connection to the game

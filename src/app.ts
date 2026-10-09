@@ -51,6 +51,16 @@ function parseCheckpoint(value: string | undefined): number | undefined {
   return parseInteger(value, 1);
 }
 
+// The most checkpoints a hunt design can ask for (the game-server's limit
+// for `POST /designer/drafts`), so a draft's checkpoint positions run 1–8.
+const MAX_DRAFT_CHECKPOINTS = 8;
+
+/** Returns a draft checkpoint's position, or undefined if it isn't an integer from 1 to 8. */
+function parseDraftPosition(value: unknown): number | undefined {
+  const position = parseInteger(value, 1);
+  return position !== undefined && position <= MAX_DRAFT_CHECKPOINTS ? position : undefined;
+}
+
 /** Like parseCheckpoint, but for a value already parsed from a JSON body. */
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1;
@@ -448,7 +458,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
       body,
       photo = false,
       noStore = photo,
-    }: { method?: 'GET' | 'POST'; body?: unknown; photo?: boolean; noStore?: boolean } = {},
+    }: { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown; photo?: boolean; noStore?: boolean } = {},
   ): Promise<void> {
     const authorization = req.get('authorization');
     const headers: Record<string, string> = authorization === undefined ? {} : { authorization };
@@ -596,6 +606,51 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
       return;
     }
     await relayAuthorised(req, res, `/designer/drafts/${encodeURIComponent(draft)}`, { noStore: true });
+  });
+
+  // Reviewing and publishing a ready draft (see issue #60). Edits, reviews
+  // and the publish request go upstream as sent: the game-server alone
+  // decides whether they're valid. The publish response and the publication
+  // carry every team's join code and the moderator code: relayed as they
+  // come, never logged, and kept by neither the browser's cache nor a proxy.
+  app.patch('/designer/drafts/:draft/checkpoints/:position', express.json(), async (req: Request, res: ExpressResponse) => {
+    const { draft, position } = req.params;
+    if (!isValidUuid(draft)) {
+      res.status(400).json({ error: 'draft must be a valid UUID' });
+      return;
+    }
+    const checkpoint = parseDraftPosition(position);
+    if (checkpoint === undefined) {
+      res.status(400).json({ error: `position must be an integer from 1 to ${MAX_DRAFT_CHECKPOINTS}` });
+      return;
+    }
+    await relayAuthorised(req, res, `/designer/drafts/${encodeURIComponent(draft)}/checkpoints/${checkpoint}`, {
+      method: 'PATCH',
+      body: req.body ?? {},
+      noStore: true,
+    });
+  });
+
+  app.post('/designer/drafts/:draft/publish', express.json(), async (req: Request, res: ExpressResponse) => {
+    const { draft } = req.params;
+    if (!isValidUuid(draft)) {
+      res.status(400).json({ error: 'draft must be a valid UUID' });
+      return;
+    }
+    await relayAuthorised(req, res, `/designer/drafts/${encodeURIComponent(draft)}/publish`, {
+      method: 'POST',
+      body: req.body ?? {},
+      noStore: true,
+    });
+  });
+
+  app.get('/designer/drafts/:draft/publication', async (req: Request, res: ExpressResponse) => {
+    const { draft } = req.params;
+    if (!isValidUuid(draft)) {
+      res.status(400).json({ error: 'draft must be a valid UUID' });
+      return;
+    }
+    await relayAuthorised(req, res, `/designer/drafts/${encodeURIComponent(draft)}/publication`, { noStore: true });
   });
 
   return app;

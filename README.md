@@ -14,8 +14,8 @@ their own guides:
   session, following the standings, reviewing photos and announcing the
   winners. Served at `/moderator-guide`.
 - **[Organiser guide](docs/organiser-guide.md)**: designing a hunt with the
-  hunt designer, what its progress steps mean and what each failure means.
-  Served at `/organiser-guide`.
+  hunt designer, what its progress steps mean and what each failure means,
+  then reviewing the draft and publishing it. Served at `/organiser-guide`.
 - **[Privacy notice](docs/privacy-notice.md)**: served at `/privacy`.
 
 The guides' screenshots are in `docs/images/`, served at `/images/`.
@@ -416,12 +416,13 @@ through unchanged.
 
 ### /designer
 
-The hunt designer (issue #59), for the organiser before any session exists:
-`/designer`. Given an area and a theme, the game-server's hunt-designer
-agent picks checkpoints from map data and writes their clues, as a
-**draft**; this screen starts a design and follows it until the draft is
-`ready` or `failed`. The [organiser guide](docs/organiser-guide.md) is
-served at `/organiser-guide`.
+The hunt designer (issues #59 and #60), for the organiser before any session
+exists: `/designer`. Given an area and a theme, the game-server's
+hunt-designer agent picks checkpoints from map data and writes their clues,
+as a **draft**; this screen starts a design and follows it until the draft
+is `ready` or `failed`, then reviews a ready draft and publishes it as a
+session. The [organiser guide](docs/organiser-guide.md) is served at
+`/organiser-guide`.
 
 - **The organiser key** (the game-server's `GAME_SERVER_ORGANISER_KEY`) is
   typed once, kept in `sessionStorage` (in memory if storage throws) and
@@ -447,23 +448,53 @@ served at `/organiser-guide`.
 - **A failed draft** explains its `run.error.code` in plain words, lists
   the problems from its last attempt, and has **Try again**, which fills in
   the form with the same request.
-- **A ready draft** lists its checkpoints read-only: name, clue and pose,
-  with the map data's attribution.
+- **A ready draft** (issue #60) is reviewed card by card. Its header shows
+  the area found, the loop's length, and the run's time, turns and cost.
+  Each checkpoint's card has the place's name and kind, the agent's
+  rationale, an **Open in OpenStreetMap** link (new tab), the clue, pose and
+  scene (the scene is the referee's only) as textareas with character
+  counters at the contract's limits (300, 200 and 1000, counted in code
+  points as the game-server counts them), and the check-in radius (20–100
+  m). **Save changes** sends only the fields that changed (checked in the
+  page first); **Accept**, **Reject** and **Undo** (back to pending) send
+  just `review`. The card's buttons are disabled while it saves. A `422`'s
+  problems show under the field each is about (`names_place` under the
+  clue or pose its message names, `too_long` and `empty` likewise,
+  `bad_proximity` under the radius), and an "Edited" mark shows once the
+  agent's text has changed. A sticky summary bar counts accepted, rejected
+  and to review, and shows the loop over the **accepted** checkpoints only,
+  worked out in the page with the game-server's haversine and closed loop.
+- **Publish hunt** is enabled only with nothing pending, at least 3
+  accepted and no unsaved changes; otherwise it says what's missing. The
+  form takes the hunt's name (1–100), the planned start and end
+  (`datetime-local`, sent as ISO 8601 with the browser's UTC offset on that
+  date) and 1–10 team names (1–40 characters, unique ignoring case), then
+  asks for confirmation in a `<dialog>`. A `409` shows the game-server's
+  `detail`, a `422` its problems or validation errors.
+- **A published draft** shows the session id, the moderator link
+  (`/moderator?session=<id>`) and code, and each team's join code, each with
+  **Copy**, and a reminder to send each team only its own code. The codes
+  are held in memory only: opening the draft again fetches them through
+  `…/publication`. Below them, the hunt's checkpoints, read-only.
 
-A draft's clues, scenes and coordinates are the answers to its hunt.
-Nothing from a draft, and never the key, is written to `localStorage`, put
-in the URL (other than the draft's id) or logged, by the page or by this
-app; error messages are fixed text, so the key can't appear in one.
+A draft's clues, scenes and coordinates are the answers to its hunt, and a
+publication's codes are credentials. Nothing from a draft, no code, and
+never the key, is written to `localStorage`, put in the URL (other than the
+draft's id) or logged, by the page or by this app; error messages are fixed
+text or the game-server's own, so the key can't appear in one.
 
 The pure logic is in `designer-logic.js`, unit-tested like
 `moderator-logic.js`. `tests/designer-page.dom.test.ts` also runs the page's
 own `designer.js` in [happy-dom](https://github.com/capricorn86/happy-dom),
 against a stub of the designer API: a design run to `ready`, busy and
-disabled, the key, failures, and a spy on `localStorage`.
+disabled, the key, failures, reviewing (the `PATCH` bodies, Save's changed
+fields, a `422 names_place` under the clue), the publish button's rule,
+publishing and reopening a published draft, and spies on `localStorage`
+and the console.
 
 ### Designer relays
 
-Relays for the hunt designer (issue #59), sharing the moderator relays'
+Relays for the hunt designer (issues #59 and #60), sharing the moderator relays'
 code: `fetchWithTimeout` with `GAME_SERVER_TIMEOUT_MS` (`504` on a
 timeout, `502` when the game-server can't be reached), otherwise the
 upstream status, content type and body unchanged, with `Cache-Control:
@@ -474,10 +505,14 @@ no-store`.
 | `POST /designer/drafts` | `POST ${GAME_SERVER_URL}/designer/drafts` | `{"area", "theme", "checkpoints", "max-walk-km"}`, as sent |
 | `GET /designer/drafts` | `GET ${GAME_SERVER_URL}/designer/drafts` | none |
 | `GET /designer/drafts/:draft` | `GET ${GAME_SERVER_URL}/designer/drafts/{draft}` | none |
+| `PATCH /designer/drafts/:draft/checkpoints/:position` | `PATCH ${GAME_SERVER_URL}/designer/drafts/{draft}/checkpoints/{position}` | `{"clue", "pose", "scene", "proximity", "review"}`, any of them, as sent |
+| `POST /designer/drafts/:draft/publish` | `POST ${GAME_SERVER_URL}/designer/drafts/{draft}/publish` | `{"name", "start-time", "end-time", "teams"}`, as sent |
+| `GET /designer/drafts/:draft/publication` | `GET ${GAME_SERVER_URL}/designer/drafts/{draft}/publication` | none |
 
-`draft` must be a UUID (`400` otherwise, nothing sent upstream). A new
-design's body goes upstream as sent: the game-server alone decides whether
-it's valid (`422` otherwise). The organiser key travels in the
+`draft` must be a UUID and `position` an integer from 1 to 8 (`400`
+otherwise, nothing sent upstream). A new design's, an edit's and a
+publish's body go upstream as sent: the game-server alone decides whether
+they're valid (`422` otherwise). The organiser key travels in the
 **`Authorization` header**, forwarded unchanged when present, never added
 or defaulted, and **never logged**; without it the game-server answers
 `401 {"detail": "organiser key required", "code": "organiser_unauthorised"}`.
@@ -489,12 +524,21 @@ answers `{"drafts": [{"id", "status", "area", "theme", "created-at",
 "finished-at", "checkpoints", "cost-usd"}]}`, newest first, at most 50. A
 draft answers in full: its `request`, `progress`, `checkpoints`,
 `problems`, `run` (with `error.code` on a failed one) and `attribution`, or
-`404` for an unknown draft. See the game-server's
+`404` for an unknown draft. An edit answers `200` with the checkpoint, `409
+{"code": "draft_not_editable"}` unless the draft is `ready`, or `422
+{"detail": "draft problems", "problems": [...]}` when it breaks a rule.
+Publishing answers `201 {"session", "name", "moderator-code", "teams":
+[{"name", "join-code"}]}`, `409 {"code": "draft_not_ready"}` saying why, or
+`422`; `…/publication` answers the same body again for a published draft,
+or `404`. These two are the only responses with join codes or a moderator
+code: relayed uncached and never logged. See the game-server's
 [API docs](https://github.com/ortaieb/scavenger-hunt-game-server/blob/main/docs/api.md#hunt-designer).
 
 To try it locally, run the game-server with `GAME_SERVER_DESIGNER_RUNNER=stub`
 and a `GAME_SERVER_ORGANISER_KEY` of at least 24 characters: every design is
-then the same three fictional checkpoints, ready in a second or so.
+then the same three fictional checkpoints, ready in a second or so. Accept
+all three and publish it, and a team can join the new session from `/play`
+with its join code.
 
 ## Scripts
 
@@ -542,8 +586,8 @@ src/
     game-logic.js       pure screen/instruction/error logic for /play, unit tested directly
     moderator-logic.js  pure phase/standings/blocked/review logic for /moderator, unit tested directly
     moderator.js        /moderator's DOM, sign-in, polling, photo and ruling wiring
-    designer-logic.js   pure form/progress/failure/draft logic for /designer, unit tested directly
-    designer.js         /designer's DOM, organiser key, design form and draft polling wiring
+    designer-logic.js   pure form/progress/failure/review/publish logic for /designer, unit tested directly
+    designer.js         /designer's DOM, organiser key, design form, draft polling, review and publish wiring
     api.js              /play's calls to this app's relays, with timeouts (and /challenge's check-in)
     play.js             /play's DOM/permissions/polling wiring
     challenge-logic.js  pure identity/check-in/verdict/hint logic, unit tested directly

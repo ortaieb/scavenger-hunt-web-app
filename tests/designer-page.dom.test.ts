@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 //
-// The hunt designer page (issue #59), run in a DOM against a stub of the
-// game-server's designer API behind this app's relays: the page's own
+// The hunt designer page (issues #59 and #60), run in a DOM against a stub
+// of the game-server's designer API behind this app's relays: the page's own
 // designer.js, with fetch answered in memory. The relays themselves are
 // tested in app.test.ts. Type-checked with the DOM's types by
 // tsconfig.dom.json.
@@ -15,6 +15,8 @@ const KEY_STORAGE_KEY = 'scavenger-hunt.organiserKey';
 const DRAFT = '5b0c7a1e-1111-4111-8111-111111111111';
 const FAILED = '5b0c7a1e-2222-4222-8222-222222222222';
 const RUNNING = '5b0c7a1e-3333-4333-8333-333333333333';
+const SESSION = '33333333-3333-4333-8333-333333333333';
+const MODERATOR_CODE = 'MOD-7Q2KX9P4H3MN';
 
 const html = readFileSync(path.join(import.meta.dirname, '..', 'src', 'public', 'designer.html'), 'utf8');
 const body = /<body>([\s\S]*)<\/body>/.exec(html)![1]!.replace(/<script[\s\S]*?<\/script>/g, '');
@@ -40,7 +42,12 @@ const STUB_CHECKPOINTS = [
   ["Stub Brewers' Arch", 'Pass under the curve where barrels once rolled.', 'Roll an invisible barrel'],
 ].map(([name, clue, pose], index) => ({
   position: index + 1,
-  place: { osm: `node/900000000${index + 1}`, name, kind: 'historic=memorial', location: { lat: 51.49, long: -0.26 } },
+  place: {
+    osm: `node/900000000${index + 1}`,
+    name,
+    kind: 'historic=memorial',
+    location: { lat: 51.49, long: -0.26 + index * 0.005 },
+  },
   clue,
   challenge: { scene: `The ${name} seen from the path.`, pose },
   proximity: 30,
@@ -49,6 +56,9 @@ const STUB_CHECKPOINTS = [
   edited: false,
   original: null,
 }));
+
+/** A team's join code, as the game-server draws them: fresh for each publish. */
+const joinCode = (name: string) => `${name.split(' ')[0]!.toUpperCase()}-7Q2K`;
 
 /** What this app's relays answer, as far as the page reads it. */
 function fakeResponse(status: number, payload: unknown) {
@@ -67,12 +77,15 @@ function fakeResponse(status: number, payload: unknown) {
 function stubGameServer() {
   const calls: Call[] = [];
   const drafts = new Map<string, Json>();
+  const publications = new Map<string, Json>();
   const state = {
     key: KEY,
     busy: false,
     disabled: false,
     offline: false,
     nextId: DRAFT,
+    publishAnswer: null as { status: number; body: unknown } | null,
+    publicationOffline: false,
   };
 
   const json = fakeResponse;
@@ -131,6 +144,26 @@ function stubGameServer() {
       }));
       return Promise.resolve(json(200, { drafts: list }));
     }
+    const edit = /^\/designer\/drafts\/([^/]+)\/checkpoints\/(\d+)$/.exec(url);
+    if (call.method === 'PATCH' && edit) {
+      return Promise.resolve(editCheckpoint(decodeURIComponent(edit[1]!), Number(edit[2]), call.body as Json));
+    }
+    const publish = /^\/designer\/drafts\/([^/]+)\/publish$/.exec(url);
+    if (call.method === 'POST' && publish) {
+      return Promise.resolve(publishDraft(decodeURIComponent(publish[1]!), call.body as Json));
+    }
+    const publication = /^\/designer\/drafts\/([^/]+)\/publication$/.exec(url);
+    if (call.method === 'GET' && publication) {
+      if (state.publicationOffline) {
+        return Promise.reject(new TypeError('Failed to fetch'));
+      }
+      const draft = drafts.get(decodeURIComponent(publication[1]!));
+      const published = draft && publications.get(draft.id as string);
+      if (!draft) {
+        return Promise.resolve(json(404, { detail: 'unknown draft' }));
+      }
+      return Promise.resolve(published ? json(200, published) : json(404, { detail: 'not published' }));
+    }
     const match = /^\/designer\/drafts\/([^/]+)$/.exec(url);
     if (call.method === 'GET' && match) {
       const draft = drafts.get(decodeURIComponent(match[1]!));
@@ -144,7 +177,7 @@ function stubGameServer() {
         } else {
           Object.assign(draft, {
             status: 'ready',
-            checkpoints: STUB_CHECKPOINTS,
+            checkpoints: STUB_CHECKPOINTS.map((checkpoint) => ({ ...checkpoint })),
             route: { 'legs-m': [420, 610, 380], 'loop-m': 1410 },
             run: { runner: 'stub', model: null, turns: 0, 'cost-usd': 0, 'duration-ms': 5000, error: null },
             'finished-at': new Date().toISOString(),
@@ -156,10 +189,93 @@ function stubGameServer() {
     return Promise.resolve(json(404, { detail: 'Not Found' }));
   });
 
-  const draftReads = () => calls.filter((call) => call.method === 'GET' && call.url.startsWith('/designer/drafts/'));
-  const posts = () => calls.filter((call) => call.method === 'POST');
+  /**
+   * PATCH a checkpoint: text edits are held to the naming rule (a word of 5
+   * or more letters from the place's name gives it away), and the first
+   * edit keeps the agent's text in `original`.
+   */
+  function editCheckpoint(id: string, position: number, body: Json) {
+    const draft = drafts.get(id);
+    if (!draft) {
+      return json(404, { detail: 'unknown draft' });
+    }
+    if (draft.status !== 'ready') {
+      return json(409, { detail: "draft can't be edited", code: 'draft_not_editable' });
+    }
+    const checkpoints = draft.checkpoints as Json[];
+    const index = checkpoints.findIndex((checkpoint) => checkpoint.position === position);
+    if (index < 0) {
+      return json(404, { detail: 'unknown checkpoint' });
+    }
+    const current = checkpoints[index]!;
+    const place = current.place as Json;
+    const words = (place.name as string).toLowerCase().match(/[a-z]{5,}/g) ?? [];
+    const problems = (['clue', 'pose'] as const).flatMap((field) => {
+      const text = typeof body[field] === 'string' ? body[field].toLowerCase() : '';
+      const found = words.find((word) => text.includes(word));
+      return found
+        ? [{ code: 'names_place', position, message: `Checkpoint ${position}'s ${field} gives the place away ("${found}"); describe it without its name` }]
+        : [];
+    });
+    if (problems.length > 0) {
+      return json(422, { detail: 'draft problems', problems });
+    }
+    const challenge = current.challenge as Json;
+    const values = { clue: current.clue, scene: challenge.scene, pose: challenge.pose, proximity: current.proximity };
+    const changed = Object.keys(values).filter((field) => field in body && body[field] !== values[field as keyof typeof values]);
+    const updated: Json = {
+      ...current,
+      clue: body.clue ?? current.clue,
+      challenge: { scene: body.scene ?? challenge.scene, pose: body.pose ?? challenge.pose },
+      proximity: body.proximity ?? current.proximity,
+      review: body.review ?? current.review,
+      edited: current.edited === true || changed.length > 0,
+      original: changed.length > 0 ? (current.original ?? values) : current.original,
+    };
+    checkpoints[index] = updated;
+    return json(200, updated);
+  }
 
-  return { fetch, calls, drafts, state, draftReads, posts };
+  /** POST …/publish: needs nothing pending and at least 3 accepted. */
+  function publishDraft(id: string, body: Json) {
+    const draft = drafts.get(id);
+    if (!draft) {
+      return json(404, { detail: 'unknown draft' });
+    }
+    if (state.publishAnswer) {
+      return json(state.publishAnswer.status, state.publishAnswer.body);
+    }
+    const checkpoints = draft.checkpoints as Json[];
+    const pending = checkpoints.filter((checkpoint) => checkpoint.review === 'pending');
+    const accepted = checkpoints.filter((checkpoint) => checkpoint.review === 'accepted');
+    const notReady =
+      draft.status === 'published'
+        ? 'draft is already published'
+        : pending.length > 0
+          ? `checkpoint(s) ${pending.map((checkpoint) => checkpoint.position as number).join(', ')} still pending review`
+          : accepted.length < 3
+            ? `${accepted.length} checkpoint(s) accepted; at least 3 are needed`
+            : null;
+    if (notReady) {
+      return json(409, { detail: notReady, code: 'draft_not_ready' });
+    }
+    const published = {
+      session: SESSION,
+      name: body.name,
+      'moderator-code': MODERATOR_CODE,
+      teams: (body.teams as string[]).map((name) => ({ name, 'join-code': joinCode(name) })),
+    };
+    publications.set(id, published);
+    Object.assign(draft, { status: 'published', published: { session: SESSION, at: new Date().toISOString() } });
+    return json(201, published);
+  }
+
+  const draftReads = () =>
+    calls.filter((call) => call.method === 'GET' && /^\/designer\/drafts\/[^/]+$/.test(call.url));
+  const posts = () => calls.filter((call) => call.method === 'POST');
+  const patches = () => calls.filter((call) => call.method === 'PATCH');
+
+  return { fetch, calls, drafts, publications, state, draftReads, posts, patches };
 }
 
 /**
@@ -220,22 +336,81 @@ async function settle() {
 
 /** The page's listeners on document and window, removed after each test. */
 const listeners: [EventTarget, string, EventListenerOrEventListenerObject][] = [];
+/** The spies that record them. */
+const listenerSpies: { mockRestore(): void }[] = [];
 
 async function loadPage(url = '/designer') {
   window.history.replaceState(null, '', url);
   document.body.innerHTML = body;
   for (const target of [document, window] as EventTarget[]) {
     const add = target.addEventListener.bind(target);
-    vi.spyOn(target, 'addEventListener').mockImplementation((type, listener, options) => {
+    const spy = vi.spyOn(target, 'addEventListener').mockImplementation((type, listener, options) => {
       if (listener) {
         listeners.push([target, type, listener]);
       }
       add(type, listener, options);
     });
+    listenerSpies.push(spy);
   }
   vi.resetModules();
   await import('../src/public/designer.js');
   await settle();
+}
+
+/** Types into a field as the organiser would: its value, then an input event. */
+function type(id: string, value: string) {
+  const field = $(id) as HTMLInputElement | HTMLTextAreaElement;
+  field.value = value;
+  field.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+const card = (position: number) => $('cards').querySelector(`li.card[data-position="${position}"]`) as HTMLElement;
+const cardButton = (position: number, action: string) =>
+  card(position).querySelector(`button[data-action="${action}"]`) as HTMLButtonElement;
+const cardText = (position: number, selector: string) => card(position).querySelector(selector)?.textContent?.trim() ?? '';
+/** The buttons a card offers, in order. */
+const cardActions = (position: number) =>
+  [...card(position).querySelectorAll<HTMLButtonElement>('.card-actions button')].filter((button) => !button.hidden).map((b) => b.textContent);
+
+async function clickCard(position: number, action: string) {
+  cardButton(position, action).click();
+  await settle();
+}
+
+/** A ready draft on the stub game-server, as the stub runner leaves it. */
+function addReadyDraft(id = DRAFT, checkpoints = STUB_CHECKPOINTS) {
+  server.drafts.set(id, {
+    id,
+    status: 'ready',
+    request: { area: 'Chiswick, London', theme: 'The Thames and brewing history', checkpoints: checkpoints.length, 'max-walk-km': 3 },
+    area: { name: 'Stub area', bbox: { south: 51.48, west: -0.27, north: 51.5, east: -0.24 }, clipped: false },
+    progress: [],
+    checkpoints: checkpoints.map((checkpoint) => ({ ...checkpoint })),
+    route: { 'legs-m': [346, 346, 692], 'loop-m': 1384 },
+    problems: [],
+    run: { runner: 'stub', model: null, turns: 0, 'cost-usd': 0, 'duration-ms': 5000, error: null },
+    attribution: '© OpenStreetMap contributors',
+    published: null,
+    'created-at': '2026-10-08T08:00:00Z',
+    'finished-at': '2026-10-08T08:00:05Z',
+  });
+}
+
+async function openReadyDraft(checkpoints = STUB_CHECKPOINTS) {
+  addReadyDraft(DRAFT, checkpoints);
+  sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
+  await loadPage(`/designer?draft=${DRAFT}`);
+}
+
+/** Loads the page again, as a reload would: the old page's listeners go. */
+async function reloadPage(url: string) {
+  for (const [target, type, listener] of listeners.splice(0)) {
+    target.removeEventListener(type, listener);
+  }
+  for (const spy of listenerSpies.splice(0)) {
+    spy.mockRestore();
+  }
+  await loadPage(url);
 }
 
 function fillDesign(values: { area?: string; theme?: string; checkpoints?: string; maxWalkKm?: string }) {
@@ -279,6 +454,7 @@ afterEach(() => {
   for (const [target, type, listener] of listeners.splice(0)) {
     target.removeEventListener(type, listener);
   }
+  listenerSpies.splice(0);
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -344,16 +520,19 @@ describe('a design runs to the end', () => {
     ]);
     expect(visible('draft-ready')).toBe(false);
 
-    // Ready: its checkpoints, read-only, and no more polling.
+    // Ready: a card for each checkpoint to review, and no more polling.
     await vi.advanceTimersByTimeAsync(2000);
     await settle();
     expect(text('draft-status')).toBe('Ready');
     expect(visible('draft-ready')).toBe(true);
-    expect(items('checkpoints')).toEqual([
-      '1. Stub Lantern Gate Clue Where old lamps once lit the way in. Pose Point at the lantern',
-      '2. Stub Riverside Bench Clue A seat with a view of the water. Pose Sit as if waiting for a boat',
-      "3. Stub Brewers' Arch Clue Pass under the curve where barrels once rolled. Pose Roll an invisible barrel",
+    expect(visible('draft-review')).toBe(true);
+    expect([...$('cards').querySelectorAll('.card-name')].map((name) => name.textContent)).toEqual([
+      '1. Stub Lantern Gate',
+      '2. Stub Riverside Bench',
+      "3. Stub Brewers' Arch",
     ]);
+    expect(input('card-1-clue').value).toBe('Where old lamps once lit the way in.');
+    expect(input('card-3-pose').value).toBe('Roll an invisible barrel');
     expect(text('attribution')).toBe('Map data © OpenStreetMap contributors');
     expect(text('draft-elapsed')).toBe('Took 0:05 · cost $0.00');
     // The list was refreshed when it finished.
@@ -662,7 +841,7 @@ describe('a failed draft', () => {
     expect(text('draft-status')).toBe('Failed');
     expect(text('failure-text')).toBe('The designer ran out of steps.');
     expect(items('problems')).toEqual(['Checkpoint 2: Checkpoints 2 and 3 are 90 m apart']);
-    expect(text('draft-elapsed')).toBe('Took 2:05 · cost $0.61');
+    expect(text('draft-elapsed')).toBe('Took 2:05 · 30 turns · cost $0.61');
     expect(items('steps')).toEqual(['0:05 Checking the draft: 1 problem: too_close']);
 
     await vi.advanceTimersByTimeAsync(10_000);
@@ -713,6 +892,536 @@ describe('a link to a draft that does not exist', () => {
   });
 });
 
+describe('reviewing a ready draft', () => {
+  it("shows the header: area, theme, the loop's length, and the run", async () => {
+    await openReadyDraft();
+
+    expect(text('draft-title')).toBe('Chiswick, London');
+    expect(text('draft-theme')).toBe('The Thames and brewing history');
+    expect(text('draft-facts')).toBe('Stub area · loop 1.38 km');
+    expect(text('draft-elapsed')).toBe('Took 0:05 · cost $0.00');
+  });
+
+  it("shows one card per checkpoint, with the place, the agent's reasons and a link to OpenStreetMap", async () => {
+    await openReadyDraft();
+
+    expect($('cards').querySelectorAll('li.card')).toHaveLength(3);
+    expect(cardText(1, '.card-name')).toBe('1. Stub Lantern Gate');
+    expect(cardText(1, '.review-badge')).toBe('To review');
+    expect(cardText(1, '.card-kind')).toBe('historic · memorial');
+    expect(cardText(1, '.card-rationale')).toBe('Why this place: A fixed stub checkpoint.');
+    const link = card(1).querySelector('a.osm-link') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('https://www.openstreetmap.org/node/9000000001');
+    expect(link.target).toBe('_blank');
+    expect(link.rel).toBe('noopener noreferrer');
+    expect(input('card-1-clue').value).toBe('Where old lamps once lit the way in.');
+    expect(input('card-1-pose').value).toBe('Point at the lantern');
+    expect(input('card-1-scene').value).toBe('The Stub Lantern Gate seen from the path.');
+    expect(input('card-1-proximity').value).toBe('30');
+    expect(text('card-1-scene-hint')).toBe('For the referee only: never shown to players.');
+    expect(text('card-1-pose-hint')).toBe('Shown to players at check-in: what to do in the photo.');
+    expect(cardActions(1)).toEqual(['Save changes', 'Accept', 'Reject']);
+    expect(cardButton(1, 'save').disabled).toBe(true);
+    expect(visible('publish-button')).toBe(true);
+  });
+
+  it('counts the characters at the limits as they are typed', async () => {
+    await openReadyDraft();
+
+    expect(text('card-1-clue-count')).toBe('36 / 300');
+    expect(text('card-1-pose-count')).toBe('20 / 200');
+    expect(text('card-1-scene-count')).toBe('41 / 1000');
+
+    type('card-1-clue', 'x'.repeat(301));
+    expect(text('card-1-clue-count')).toBe('301 / 300');
+    expect($('card-1-clue-count').classList.contains('counter--over')).toBe(true);
+  });
+
+  it('sends the right PATCH bodies to accept, reject and undo, and shows each review', async () => {
+    await openReadyDraft();
+
+    await clickCard(1, 'accepted');
+    expect(server.patches().at(-1)).toEqual({
+      method: 'PATCH',
+      url: `/designer/drafts/${DRAFT}/checkpoints/1`,
+      authorization: `Bearer ${KEY}`,
+      body: { review: 'accepted' },
+    });
+    expect(cardText(1, '.review-badge')).toBe('Accepted');
+    expect(card(1).classList.contains('card--accepted')).toBe(true);
+    expect(cardActions(1)).toEqual(['Save changes', 'Reject', 'Undo']);
+
+    await clickCard(2, 'rejected');
+    expect(server.patches().at(-1)).toMatchObject({ url: `/designer/drafts/${DRAFT}/checkpoints/2`, body: { review: 'rejected' } });
+    expect(cardText(2, '.review-badge')).toBe('Rejected');
+    expect(cardActions(2)).toEqual(['Save changes', 'Accept', 'Undo']);
+
+    await clickCard(2, 'pending');
+    expect(server.patches().at(-1)).toMatchObject({ url: `/designer/drafts/${DRAFT}/checkpoints/2`, body: { review: 'pending' } });
+    expect(cardText(2, '.review-badge')).toBe('To review');
+    expect(cardActions(2)).toEqual(['Save changes', 'Accept', 'Reject']);
+    expect(server.patches()).toHaveLength(3);
+  });
+
+  it('saves only the fields that changed, and marks the card edited', async () => {
+    await openReadyDraft();
+
+    type('card-2-clue', 'A seat that looks over the water.');
+    expect(cardButton(2, 'save').disabled).toBe(false);
+    expect(visible('publish-reason')).toBe(true);
+    expect(text('publish-reason')).toContain('Save your changes to checkpoint 2 first.');
+    await clickCard(2, 'save');
+
+    expect(server.patches()).toEqual([
+      {
+        method: 'PATCH',
+        url: `/designer/drafts/${DRAFT}/checkpoints/2`,
+        authorization: `Bearer ${KEY}`,
+        body: { clue: 'A seat that looks over the water.' },
+      },
+    ]);
+    expect(input('card-2-clue').value).toBe('A seat that looks over the water.');
+    expect(cardButton(2, 'save').disabled).toBe(true);
+    expect((card(2).querySelector('.edited-mark') as HTMLElement).hidden).toBe(false);
+    expect((card(1).querySelector('.edited-mark') as HTMLElement).hidden).toBe(true);
+    expect(text('publish-reason')).not.toContain('Save your changes');
+
+    // The radius goes as a number, alone.
+    type('card-2-proximity', '45');
+    await clickCard(2, 'save');
+    expect(server.patches().at(-1)?.body).toEqual({ proximity: 45 });
+  });
+
+  it("keeps what's typed in one card while another is saved", async () => {
+    await openReadyDraft();
+
+    type('card-1-pose', 'Wave at the lamp');
+    await clickCard(2, 'accepted');
+
+    expect(input('card-1-pose').value).toBe('Wave at the lamp');
+    expect(cardButton(1, 'save').disabled).toBe(false);
+  });
+
+  it('shows a 422 names_place under the clue, and saves nothing', async () => {
+    await openReadyDraft();
+
+    type('card-1-clue', 'Find the lantern by the gate.');
+    await clickCard(1, 'save');
+
+    expect(server.patches()).toHaveLength(1);
+    expect(visible('card-1-clue-error')).toBe(true);
+    expect(text('card-1-clue-error')).toBe('Checkpoint 1\'s clue gives the place away ("lantern"); describe it without its name');
+    expect(input('card-1-clue').getAttribute('aria-invalid')).toBe('true');
+    expect(visible('card-1-pose-error')).toBe(false);
+    expect((card(1).querySelector('.card-error') as HTMLElement).hidden).toBe(true);
+    // Nothing was saved: the text is still unsaved, and not marked edited.
+    expect(cardButton(1, 'save').disabled).toBe(false);
+    expect((card(1).querySelector('.edited-mark') as HTMLElement).hidden).toBe(true);
+
+    // Fixing it clears the problem once it's saved.
+    type('card-1-clue', 'Where old lamps once lit the way, by the gate.');
+    await clickCard(1, 'save');
+    expect(visible('card-1-clue-error')).toBe(false);
+  });
+
+  it('shows a 422 names_place under the pose when the pose names the place', async () => {
+    await openReadyDraft();
+
+    type('card-2-pose', 'Sit on the riverside seat');
+    await clickCard(2, 'save');
+
+    expect(text('card-2-pose-error')).toBe('Checkpoint 2\'s pose gives the place away ("riverside"); describe it without its name');
+    expect(visible('card-2-clue-error')).toBe(false);
+  });
+
+  it('checks the limits in the page first, and sends nothing until they pass', async () => {
+    await openReadyDraft();
+
+    type('card-1-clue', '   ');
+    type('card-1-proximity', '150');
+    await clickCard(1, 'save');
+
+    expect(server.patches()).toHaveLength(0);
+    expect(text('card-1-clue-error')).toBe("The clue can't be empty.");
+    expect(text('card-1-proximity-error')).toBe('Choose a whole number of metres from 20 to 100.');
+    expect(document.activeElement).toBe($('card-1-clue'));
+
+    // Fixing a field clears its error as it's typed.
+    type('card-1-proximity', '60');
+    expect(visible('card-1-proximity-error')).toBe(false);
+  });
+
+  it("disables the card's buttons and fields while saving", async () => {
+    await openReadyDraft();
+    let answer = () => undefined as void;
+    server.fetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = () => resolve(fakeResponse(200, { ...STUB_CHECKPOINTS[0], review: 'accepted' }));
+        }),
+    );
+
+    cardButton(1, 'accepted').click();
+    await settle();
+
+    expect(cardButton(1, 'accepted').disabled).toBe(true);
+    expect(cardButton(1, 'rejected').disabled).toBe(true);
+    expect(cardButton(1, 'save').disabled).toBe(true);
+    expect(input('card-1-clue').readOnly).toBe(true);
+    expect(card(1).getAttribute('aria-busy')).toBe('true');
+    // Another card can still be reviewed.
+    expect(cardButton(2, 'accepted').disabled).toBe(false);
+    cardButton(1, 'rejected').click();
+    await settle();
+    expect(server.fetch.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1);
+
+    answer();
+    await settle();
+    expect(cardText(1, '.review-badge')).toBe('Accepted');
+    expect(cardButton(1, 'rejected').disabled).toBe(false);
+    expect(input('card-1-clue').readOnly).toBe(false);
+  });
+
+  it('says on the card when the draft can no longer be edited, and reads it again', async () => {
+    await openReadyDraft();
+    server.drafts.get(DRAFT)!.status = 'published';
+    const reads = server.draftReads().length;
+
+    await clickCard(1, 'accepted');
+
+    expect(server.draftReads()).toHaveLength(reads + 1);
+    expect(text('draft-status')).toBe('Published');
+  });
+
+  it('says on the card when there is no connection, and keeps the edit', async () => {
+    await openReadyDraft();
+    type('card-1-pose', 'Wave at the lamp');
+    server.state.offline = true;
+
+    await clickCard(1, 'save');
+
+    expect(cardText(1, '.card-error')).toBe('No connection to the game server.');
+    expect(input('card-1-pose').value).toBe('Wave at the lamp');
+    expect(cardButton(1, 'save').disabled).toBe(false);
+  });
+
+  it('a 401 clears the key and asks again', async () => {
+    await openReadyDraft();
+    server.state.key = 'a-new-key-of-at-least-24-chars';
+
+    await clickCard(1, 'accepted');
+
+    expect(visible('sign-in')).toBe(true);
+    expect($('cards').children).toHaveLength(0);
+  });
+
+  it('counts accepted, rejected and to review, and works out the loop over the accepted only', async () => {
+    await openReadyDraft();
+
+    expect(text('count-accepted')).toBe('0 accepted');
+    expect(text('count-rejected')).toBe('0 rejected');
+    expect(text('count-pending')).toBe('3 to review');
+    expect(text('review-loop')).toBe('Accept checkpoints to see the loop');
+
+    await clickCard(1, 'accepted');
+    await clickCard(3, 'accepted');
+    expect(text('count-accepted')).toBe('2 accepted');
+    expect(text('count-pending')).toBe('1 to review');
+    // 1 → 3 and back: checkpoint 2, between them, is left out.
+    expect(text('review-loop')).toBe('Loop of the accepted: 1.38 km (up to 3 km)');
+
+    await clickCard(2, 'rejected');
+    expect(text('count-rejected')).toBe('1 rejected');
+    expect(text('count-pending')).toBe('0 to review');
+  });
+});
+
+describe('the Publish hunt button', () => {
+  const FOUR = [
+    ...STUB_CHECKPOINTS,
+    { ...STUB_CHECKPOINTS[0]!, position: 4, place: { ...STUB_CHECKPOINTS[0]!.place, osm: 'node/9000000004', name: 'Stub Old Mill' } },
+  ];
+  const publishButton = () => $('publish-button') as HTMLButtonElement;
+
+  it('is disabled with a checkpoint pending, and says so', async () => {
+    await openReadyDraft();
+    await clickCard(1, 'accepted');
+    await clickCard(2, 'accepted');
+
+    expect(publishButton().disabled).toBe(true);
+    expect(text('publish-reason')).toBe(
+      'Accept or reject every checkpoint: 1 checkpoint still to review. At least 3 must be accepted (2 so far).',
+    );
+
+    await clickCard(3, 'accepted');
+    expect(publishButton().disabled).toBe(false);
+    expect(visible('publish-reason')).toBe(false);
+  });
+
+  it('is disabled with fewer than 3 accepted, and says so', async () => {
+    await openReadyDraft(FOUR);
+    await clickCard(1, 'accepted');
+    await clickCard(2, 'accepted');
+    await clickCard(3, 'rejected');
+    await clickCard(4, 'rejected');
+
+    expect(publishButton().disabled).toBe(true);
+    expect(text('publish-reason')).toBe('At least 3 must be accepted, and 2 are: undo a rejection to accept it.');
+  });
+
+  it('is enabled with 3 accepted and the rest rejected', async () => {
+    await openReadyDraft(FOUR);
+    await clickCard(1, 'accepted');
+    await clickCard(2, 'rejected');
+    await clickCard(3, 'accepted');
+    await clickCard(4, 'accepted');
+
+    expect(publishButton().disabled).toBe(false);
+    expect(visible('publish-reason')).toBe(false);
+  });
+});
+
+describe('publishing', () => {
+  async function readyToPublish() {
+    await openReadyDraft();
+    for (const position of [1, 2, 3]) {
+      await clickCard(position, 'accepted');
+    }
+  }
+
+  function fillPublish(values: { name?: string; start?: string; end?: string; teams?: string[] }) {
+    if (values.name !== undefined) input('hunt-name').value = values.name;
+    if (values.start !== undefined) input('start-time').value = values.start;
+    if (values.end !== undefined) input('end-time').value = values.end;
+    for (const [index, name] of (values.teams ?? []).entries()) {
+      if (!document.getElementById(`team-${index + 1}`)) {
+        $('add-team').click();
+      }
+      type(`team-${index + 1}`, name);
+    }
+  }
+
+  /** What the browser sends for a datetime-local value: its own offset on that date. */
+  function iso(local: string) {
+    const [date, time] = local.split('T') as [string, string];
+    const [year, month, day] = date.split('-').map(Number) as [number, number, number];
+    const [hour, minute] = time.split(':').map(Number) as [number, number];
+    const offset = -new Date(year, month - 1, day, hour, minute).getTimezoneOffset();
+    const abs = Math.abs(offset);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${local}:00${offset < 0 ? '-' : '+'}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+  }
+
+  async function confirm(answer: 'ok' | 'cancel') {
+    expect(($('publish-confirm') as HTMLDialogElement).open).toBe(true);
+    $(answer === 'ok' ? 'publish-ok' : 'publish-cancel').click();
+    await settle();
+  }
+
+  const form = {
+    name: '  Chiswick river hunt ',
+    start: '2026-10-11T10:00',
+    end: '2026-10-11T12:00',
+    teams: ['Red Foxes', ' Blue Herons', 'Green Owls'],
+  };
+
+  it('asks first, then posts the right body and shows the session, the moderator link and code, and the join codes', async () => {
+    await readyToPublish();
+    fillPublish(form);
+
+    await submit('publish-form');
+    expect(text('publish-confirm')).toContain("Publishing makes this hunt playable at once. You can't edit it afterwards.");
+    expect(server.posts()).toHaveLength(0);
+    await confirm('ok');
+
+    expect(server.posts()).toEqual([
+      {
+        method: 'POST',
+        url: `/designer/drafts/${DRAFT}/publish`,
+        authorization: `Bearer ${KEY}`,
+        body: {
+          name: 'Chiswick river hunt',
+          'start-time': iso('2026-10-11T10:00'),
+          'end-time': iso('2026-10-11T12:00'),
+          teams: ['Red Foxes', 'Blue Herons', 'Green Owls'],
+        },
+      },
+    ]);
+    expect(text('draft-status')).toBe('Published');
+    expect(visible('draft-review')).toBe(false);
+    expect(visible('publication')).toBe(true);
+    expect(text('publication-session')).toBe(SESSION);
+    const link = $('moderator-link') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe(`/moderator?session=${SESSION}`);
+    expect(link.textContent).toBe(`http://localhost:3000/moderator?session=${SESSION}`);
+    expect(text('moderator-code')).toBe(MODERATOR_CODE);
+    expect(items('team-codes')).toEqual(['Red Foxes RED-7Q2K Copy', 'Blue Herons BLUE-7Q2K Copy', 'Green Owls GREEN-7Q2K Copy']);
+    expect($('publication').textContent).toContain('Send each team only its own code');
+    // Only the accepted checkpoints are in the hunt.
+    expect(items('checkpoints')).toHaveLength(3);
+    // The list says it's published too.
+    expect($('drafts').textContent).toContain('Published');
+  });
+
+  it('sends nothing when the confirmation is cancelled', async () => {
+    await readyToPublish();
+    fillPublish(form);
+
+    await submit('publish-form');
+    await confirm('cancel');
+
+    expect(server.posts()).toHaveLength(0);
+    expect(visible('draft-review')).toBe(true);
+  });
+
+  it('checks the form in the page, and sends nothing until it passes', async () => {
+    await readyToPublish();
+    fillPublish({ name: ' ', start: '2026-10-11T12:00', end: '2026-10-11T10:00', teams: ['Red Foxes', 'red foxes'] });
+
+    await submit('publish-form');
+
+    expect(($('publish-confirm') as HTMLDialogElement).open).toBe(false);
+    expect(server.posts()).toHaveLength(0);
+    expect(text('hunt-name-error')).toBe("Enter the hunt's name.");
+    expect(text('end-time-error')).toBe('It must end after it starts.');
+    expect(visible('start-time-error')).toBe(false);
+    expect(text('team-2-error')).toBe('Team 1 has the same name. Each team needs its own, whatever the capitals.');
+    expect(document.activeElement).toBe($('hunt-name'));
+  });
+
+  it('adds and removes team rows, from 1 to 10', async () => {
+    await readyToPublish();
+
+    expect($('teams').querySelectorAll('input')).toHaveLength(2);
+    for (let i = 0; i < 8; i += 1) {
+      $('add-team').click();
+    }
+    expect($('teams').querySelectorAll('input')).toHaveLength(10);
+    expect(($('add-team') as HTMLButtonElement).disabled).toBe(true);
+
+    type('team-1', 'Red Foxes');
+    type('team-3', 'Green Owls');
+    ($('teams').querySelector('button[aria-label="Remove team 2"]') as HTMLButtonElement).click();
+    expect($('teams').querySelectorAll('input')).toHaveLength(9);
+    expect(input('team-1').value).toBe('Red Foxes');
+    expect(input('team-2').value).toBe('Green Owls');
+    expect(($('add-team') as HTMLButtonElement).disabled).toBe(false);
+
+    while ($('teams').querySelectorAll('input').length > 1) {
+      ($('teams').querySelector('button.remove-team') as HTMLButtonElement).click();
+    }
+    expect(($('teams').querySelector('button.remove-team') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows a 409 with the server's detail", async () => {
+    await readyToPublish();
+    server.state.publishAnswer = { status: 409, body: { detail: 'checkpoint(s) 2 still pending review', code: 'draft_not_ready' } };
+    fillPublish(form);
+
+    await submit('publish-form');
+    await confirm('ok');
+
+    expect(text('publish-error-text')).toBe("The game-server can't publish this draft yet. checkpoint(s) 2 still pending review.");
+    expect(visible('draft-review')).toBe(true);
+    expect(input('hunt-name').value).toBe(form.name);
+  });
+
+  it("shows a 422's problems", async () => {
+    await readyToPublish();
+    server.state.publishAnswer = {
+      status: 422,
+      body: {
+        detail: 'draft problems',
+        problems: [{ code: 'route_too_long', position: null, message: 'The route is 3.4 km round; keep it within 3 km' }],
+      },
+    };
+    fillPublish(form);
+
+    await submit('publish-form');
+    await confirm('ok');
+
+    expect(text('publish-error-text')).toBe('The accepted checkpoints break a rule:');
+    expect(items('publish-error-lines')).toEqual(['The route is 3.4 km round; keep it within 3 km']);
+    expect(($('publish-button') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('copies a join code', async () => {
+    await readyToPublish();
+    fillPublish(form);
+    await submit('publish-form');
+    await confirm('ok');
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
+
+    const copy = $('team-codes').querySelector('button[aria-label="Copy Blue Herons\'s join code"]') as HTMLButtonElement;
+    copy.click();
+    await settle();
+
+    expect(writeText).toHaveBeenCalledWith('BLUE-7Q2K');
+    expect(copy.textContent).toBe('Copied');
+    expect(text('copy-status')).toBe("Copied Blue Herons's join code.");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(copy.textContent).toBe('Copy');
+
+    $('copy-moderator-code').click();
+    await settle();
+    expect(writeText).toHaveBeenLastCalledWith(MODERATOR_CODE);
+    $('copy-moderator-link').click();
+    await settle();
+    expect(writeText).toHaveBeenLastCalledWith(`http://localhost:3000/moderator?session=${SESSION}`);
+  });
+
+  it("shows the codes again from …/publication when a published draft is reopened, and doesn't keep them", async () => {
+    await readyToPublish();
+    fillPublish(form);
+    await submit('publish-form');
+    await confirm('ok');
+    const publicationReads = () => server.calls.filter((call) => call.url.endsWith('/publication'));
+    expect(publicationReads()).toHaveLength(0);
+
+    await reloadPage(`/designer?draft=${DRAFT}`);
+
+    expect(publicationReads()).toEqual([
+      { method: 'GET', url: `/designer/drafts/${DRAFT}/publication`, authorization: `Bearer ${KEY}`, body: undefined },
+    ]);
+    expect(text('draft-status')).toBe('Published');
+    expect(text('publication-session')).toBe(SESSION);
+    expect(text('moderator-code')).toBe(MODERATOR_CODE);
+    expect(items('team-codes')).toEqual(['Red Foxes RED-7Q2K Copy', 'Blue Herons BLUE-7Q2K Copy', 'Green Owls GREEN-7Q2K Copy']);
+
+    // Closing the draft takes the codes off the page.
+    $('draft-close').click();
+    await settle();
+    expect($('team-codes').children).toHaveLength(0);
+    expect(text('moderator-code')).toBe('');
+  });
+
+  it("says when a published draft's codes can't be had, and tries again", async () => {
+    addReadyDraft();
+    server.drafts.get(DRAFT)!.status = 'published';
+    server.publications.set(DRAFT, {
+      session: SESSION,
+      name: 'Chiswick river hunt',
+      'moderator-code': MODERATOR_CODE,
+      teams: [{ name: 'Red Foxes', 'join-code': 'RED-7Q2K' }],
+    });
+    server.state.publicationOffline = true;
+    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
+    await loadPage(`/designer?draft=${DRAFT}`);
+
+    expect(text('draft-status')).toBe('Published');
+    expect(visible('publication')).toBe(false);
+    expect(text('publication-error')).toBe("No connection to the game server: the codes can't be shown.");
+
+    server.state.publicationOffline = false;
+    $('publication-retry').click();
+    await settle();
+
+    expect(visible('publication-error')).toBe(false);
+    expect(visible('publication-retry')).toBe(false);
+    expect(text('moderator-code')).toBe(MODERATOR_CODE);
+  });
+});
+
 describe('privacy', () => {
   it('writes nothing from a draft, and never the key, to localStorage, the URL or the console', async () => {
     await loadPage();
@@ -725,7 +1434,7 @@ describe('privacy', () => {
       await settle();
     }
     expect(text('draft-status')).toBe('Ready');
-    expect($('checkpoints').textContent).toContain('Where old lamps once lit the way in.');
+    expect(input('card-1-clue').value).toBe('Where old lamps once lit the way in.');
 
     expect(localSetItem).not.toHaveBeenCalled();
     expect(localStorage).toHaveLength(0);
@@ -734,6 +1443,47 @@ describe('privacy', () => {
     // The URL holds the draft's id and nothing else.
     expect(window.location.search).toBe(`?draft=${DRAFT}`);
     expect(window.location.hash).toBe('');
+    for (const spy of logged) {
+      expect(spy).not.toHaveBeenCalled();
+    }
+  });
+
+  it('writes no code, clue, scene or coordinate to storage, the URL or the console while reviewing and publishing', async () => {
+    await openReadyDraft();
+    type('card-1-scene', 'A lamp on a stone gatepost, ivy behind.');
+    await clickCard(1, 'save');
+    for (const position of [1, 2, 3]) {
+      await clickCard(position, 'accepted');
+    }
+    input('hunt-name').value = 'Chiswick river hunt';
+    input('start-time').value = '2026-10-11T10:00';
+    input('end-time').value = '2026-10-11T12:00';
+    type('team-1', 'Red Foxes');
+    type('team-2', 'Blue Herons');
+    await submit('publish-form');
+    $('publish-ok').click();
+    await settle();
+    expect(text('moderator-code')).toBe(MODERATOR_CODE);
+    await reloadPage(`/designer?draft=${DRAFT}`);
+    expect(items('team-codes')).toHaveLength(2);
+
+    const secrets = [
+      MODERATOR_CODE,
+      'RED-7Q2K',
+      'BLUE-7Q2K',
+      'Where old lamps once lit the way in.',
+      'A lamp on a stone gatepost, ivy behind.',
+      '51.49',
+      '-0.26',
+    ];
+    expect(localSetItem).not.toHaveBeenCalled();
+    expect(localStorage).toHaveLength(0);
+    // sessionStorage holds the key and nothing else.
+    expect([...sessionStorage.items]).toEqual([[KEY_STORAGE_KEY, KEY]]);
+    for (const secret of secrets) {
+      expect(window.location.href).not.toContain(secret);
+    }
+    expect(window.location.search).toBe(`?draft=${DRAFT}`);
     for (const spy of logged) {
       expect(spy).not.toHaveBeenCalled();
     }

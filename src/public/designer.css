@@ -1,6 +1,7 @@
-/* The hunt designer at /designer (issue #59). Builds on play.css (its
-   colours, buttons and messages) and moderator.css (its panels and the
-   Forget key button), and works from a phone up to a laptop. */
+/* The hunt designer at /designer (issues #59 and #60). Builds on play.css
+   (its colours, buttons and messages) and moderator.css (its panels, the
+   Forget key button and the confirm dialog's actions), and works from a
+   phone up to a laptop. */
 
 .designer {
   width: 100%;
@@ -35,7 +36,9 @@
    password field like the moderator code. */
 .designer input[type='text'],
 .designer input[type='number'],
-.designer input[type='password'] {
+.designer input[type='password'],
+.designer input[type='datetime-local'],
+.designer textarea {
   width: 100%;
   min-height: 48px;
   padding: 0.5rem 0.75rem;
@@ -51,12 +54,35 @@
 
 .designer .panel input[type='text'],
 .designer .panel input[type='number'],
-.designer .panel input[type='password'] {
+.designer .panel input[type='password'],
+.designer .panel input[type='datetime-local'] {
   background: var(--bg);
 }
 
-.designer input[aria-invalid='true'] {
+.designer textarea {
+  min-height: 0;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+.designer textarea:read-only,
+.designer input:read-only {
+  opacity: 0.7;
+}
+
+.designer input[aria-invalid='true'],
+.designer textarea[aria-invalid='true'] {
   border-color: var(--error-text);
+}
+
+/* Keeps a label for screen readers without showing it. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .designer form .field-label {
@@ -73,6 +99,16 @@
   display: grid;
   align-content: start;
   gap: 0.35rem;
+  /* A date and time input is wide: let it shrink rather than widen the page. */
+  min-width: 0;
+}
+
+/* On a phone, the planned start and end go one above the other. */
+@media (max-width: 32rem) {
+  #publish-form .field-pair {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
 }
 
 .field-pair .field-label {
@@ -307,4 +343,347 @@
 .guide-link {
   margin: 0;
   text-align: center;
+}
+
+/* Reviewing a ready draft (issue #60). */
+.draft-facts {
+  margin: 0.25rem 0 0;
+}
+
+.draft-facts:empty {
+  display: none;
+}
+
+.review-intro {
+  margin: 0 0 0.75rem;
+}
+
+.cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1rem;
+}
+
+.card {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  border: 2px solid var(--border);
+  border-left-width: 6px;
+  background: var(--bg);
+}
+
+.card--accepted {
+  border-left-color: #4ade80;
+}
+
+.card--rejected {
+  border-left-color: var(--error-text);
+}
+
+.card--rejected .card-name {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.6rem;
+}
+
+.card-name {
+  margin: 0;
+  font-size: 1.1rem;
+  overflow-wrap: anywhere;
+}
+
+/* A review carries its meaning in words; the colour only repeats it. */
+.review-badge,
+.edited-mark {
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  border: 2px solid var(--border);
+  font-size: 0.85rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.review-badge--pending {
+  border-color: var(--warning-text);
+  color: var(--warning-text);
+}
+
+.review-badge--accepted {
+  border-color: #4ade80;
+  color: #bbf7d0;
+}
+
+.review-badge--rejected {
+  border-color: var(--error-text);
+  color: var(--error-text);
+}
+
+.edited-mark {
+  border-style: dashed;
+  color: var(--link);
+}
+
+.edited-mark::before {
+  content: '✎ ';
+}
+
+.card-kind,
+.card-rationale {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.card-rationale-label {
+  font-weight: 600;
+}
+
+.osm-link {
+  justify-self: start;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+}
+
+.osm-link::after {
+  content: ' ↗';
+}
+
+.card .field-label {
+  margin: 0.5rem 0 0;
+}
+
+.field-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.counter {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Over the limit: said in words too, under the field, on Save. */
+.counter--over {
+  color: var(--error-text);
+  font-weight: 700;
+}
+
+.counter--over::before {
+  content: 'Too long: ';
+}
+
+.card .radius {
+  max-width: 8rem;
+}
+
+.card .card-error {
+  margin: 0.5rem 0 0;
+}
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.card-actions button {
+  flex: 1 1 8rem;
+  width: auto;
+  min-height: 48px;
+}
+
+.card-actions button[hidden] {
+  display: none;
+}
+
+/* The counts and the loop stay in view while the cards scroll by. */
+.review-summary {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: grid;
+  gap: 0.2rem;
+  margin: 1rem -0.25rem 0;
+  padding: 0.6rem 0.75rem calc(0.6rem + var(--safe-bottom));
+  border-radius: 0.6rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-variant-numeric: tabular-nums;
+}
+
+.review-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  font-weight: 700;
+}
+
+/* Publishing. */
+.publish {
+  margin-top: 1.5rem;
+}
+
+#publish-form .field-label {
+  margin: 0.5rem 0 0;
+}
+
+#publish-form > button[type='submit'] {
+  margin-top: 0.75rem;
+}
+
+#publish-form .action-reason {
+  margin: 0.75rem 0 0;
+}
+
+#publish-form .action-reason[hidden],
+#publish-form .message[hidden] {
+  display: none;
+}
+
+.teams-field {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  border: none;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.teams-field legend {
+  padding: 0;
+}
+
+.teams {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.teams li {
+  margin: 0;
+}
+
+.team-input {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.team-input input {
+  flex: 1;
+  min-width: 0;
+}
+
+.remove-team {
+  flex: none;
+  width: auto;
+  padding: 0 0.9rem;
+}
+
+#add-team {
+  justify-self: start;
+  width: auto;
+  padding: 0 1rem;
+}
+
+/* A published draft: its codes. */
+.publication h2 {
+  margin-top: 1.25rem;
+}
+
+.publication .message--note {
+  white-space: normal;
+}
+
+.publication h3 {
+  margin: 1rem 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+.publication-details {
+  margin: 0;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.publication-details dt {
+  margin-top: 0.5rem;
+  color: var(--muted);
+}
+
+.publication-details dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.copy-row,
+.team-code {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.75rem;
+}
+
+.code-text {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.copy-button {
+  flex: none;
+  width: auto;
+  min-width: 5.5rem;
+  padding: 0 0.9rem;
+}
+
+.team-codes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.team-code {
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.6rem;
+  background: var(--bg);
+}
+
+.team-code-name {
+  font-weight: 700;
+  margin-right: auto;
+  overflow-wrap: anywhere;
+}
+
+#publication-retry {
+  width: auto;
+  padding: 0 1rem;
+  margin-top: 0.5rem;
+}
+
+#publication-retry[hidden] {
+  display: none;
 }
