@@ -5,7 +5,9 @@
 // a ready draft's checkpoints. Reviewing and publishing a ready draft (issue
 // #60) live here too: the edit limits and the changed fields, which field a
 // problem is about, the review counts and the loop over the accepted
-// checkpoints, the "can publish" rule, and the publish form.
+// checkpoints, the "can publish" rule, and the publish form. So does what the
+// route map (issue #61) draws: the area's box, a marker per checkpoint styled
+// by its review, the loop through them, and the view that fits it all.
 //
 // A draft's clues, scenes and coordinates are the answers to its hunt, and
 // a publication's codes are credentials: this file only shapes them for the
@@ -38,11 +40,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  *   'duration-ms'?: number | null,
  *   error?: { code: string } | null,
  * }} DraftRun
+ * @typedef {{ south: number, west: number, north: number, east: number }} Box
  * @typedef {{
  *   id: string,
  *   status: string,
  *   request: DesignRequest,
- *   area?: { name: string, clipped?: boolean } | null,
+ *   area?: { name: string, bbox?: Box, clipped?: boolean } | null,
  *   progress?: ProgressEntry[],
  *   checkpoints?: DraftCheckpoint[],
  *   route?: { 'legs-m': number[], 'loop-m': number } | null,
@@ -887,6 +890,148 @@ export function reviewSummary(draft) {
     ...reviewCounts(draft?.checkpoints),
     loop: loop === null ? 'Accept checkpoints to see the loop' : `Loop of the accepted: ${distanceWords(loop)}${limit}`,
   };
+}
+
+// --- the route map -------------------------------------------------------------------
+
+/**
+ * How a checkpoint's marker looks for each review: the words in its title,
+ * its class, and whether the loop goes through it. A rejected one is faded
+ * and left out of the loop. The words carry the meaning; the colour only
+ * repeats it.
+ */
+export const MARKER_STYLES = Object.freeze({
+  pending: Object.freeze({ words: REVIEW_WORDS.pending, className: 'route-marker route-marker--pending', inLoop: true }),
+  accepted: Object.freeze({ words: REVIEW_WORDS.accepted, className: 'route-marker route-marker--accepted', inLoop: true }),
+  rejected: Object.freeze({ words: REVIEW_WORDS.rejected, className: 'route-marker route-marker--rejected', inLoop: false }),
+});
+
+/**
+ * @param {unknown} review a checkpoint's review; anything else is pending
+ * @returns {{ words: string, className: string, inLoop: boolean }}
+ */
+export function markerStyle(review) {
+  return MARKER_STYLES[review === 'accepted' || review === 'rejected' ? review : 'pending'];
+}
+
+/**
+ * The area the draft was designed in, when it has a usable box.
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {Box | null}
+ */
+export function areaBox(draft) {
+  const box = draft?.area?.bbox;
+  if (!box || typeof box !== 'object') {
+    return null;
+  }
+  const { south, west, north, east } = box;
+  return [south, west, north, east].every(Number.isFinite) && south <= north && west <= east
+    ? { south, west, north, east }
+    : null;
+}
+
+/**
+ * The view that fits the area's box and every place, as Leaflet takes it:
+ * [[south, west], [north, east]]. null with nothing to fit.
+ *
+ * @param {Box | null} box
+ * @param {Location[]} points
+ * @returns {[[number, number], [number, number]] | null}
+ */
+export function mapBounds(box, points) {
+  const lats = box ? [box.south, box.north] : [];
+  const longs = box ? [box.west, box.east] : [];
+  for (const point of points) {
+    if (isLocation(point)) {
+      lats.push(point.lat);
+      longs.push(point.long);
+    }
+  }
+  if (lats.length === 0) {
+    return null;
+  }
+  return [
+    [Math.min(...lats), Math.min(...longs)],
+    [Math.max(...lats), Math.max(...longs)],
+  ];
+}
+
+/**
+ * The line on the map: [lat, long] in route order and back to the first,
+ * through every place but the rejected ones, as the server measures the loop
+ * (straight lines, not streets). [] with fewer than 2 to join.
+ *
+ * @param {{ lat: number, long: number, review: string }[]} markers in route order
+ * @returns {[number, number][]}
+ */
+export function loopLatLngs(markers) {
+  /** @type {[number, number][]} */
+  const points = markers.filter((marker) => markerStyle(marker.review).inLoop).map((marker) => [marker.lat, marker.long]);
+  return points.length < 2 ? [] : [...points, points[0]];
+}
+
+/**
+ * @typedef {{
+ *   position: number,
+ *   name: string,
+ *   review: 'pending' | 'accepted' | 'rejected',
+ *   title: string,
+ *   className: string,
+ *   lat: number,
+ *   long: number,
+ * }} RouteMarker `position` is the number on the marker, and on the card or
+ *   row it stands for
+ */
+
+/**
+ * What the route map draws for a finished draft: the area's box, a marker for
+ * each checkpoint with a place, the loop, and the view that fits them. A
+ * ready draft's markers are numbered as its cards are and styled by their
+ * review; a published draft's are its accepted checkpoints, numbered 1…n as
+ * the session numbers them. null for a draft that isn't finished.
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {{
+ *   box: Box | null,
+ *   markers: RouteMarker[],
+ *   loop: [number, number][],
+ *   bounds: [[number, number], [number, number]] | null,
+ * } | null}
+ */
+export function routeMap(draft) {
+  const status = draft?.status;
+  if (status !== 'ready' && status !== 'published') {
+    return null;
+  }
+  const published = status === 'published';
+  const checkpoints = inRouteOrder(draft);
+  /** @type {RouteMarker[]} */
+  const markers = (published ? checkpoints.filter((checkpoint) => checkpoint.review === 'accepted') : checkpoints).flatMap(
+    (checkpoint, index) => {
+      const location = checkpoint.place?.location;
+      if (!isLocation(location)) {
+        return [];
+      }
+      const position = published ? index + 1 : checkpoint.position;
+      const name = textOf(checkpoint.place?.name);
+      const review = reviewOf(checkpoint);
+      const style = markerStyle(review);
+      return [
+        {
+          position,
+          name,
+          review,
+          title: published ? `${position}. ${name}` : `${position}. ${name}: ${style.words}`,
+          className: style.className,
+          lat: location.lat,
+          long: location.long,
+        },
+      ];
+    },
+  );
+  const box = areaBox(draft);
+  return { box, markers, loop: loopLatLngs(markers), bounds: mapBounds(box, markers) };
 }
 
 // --- publishing ---------------------------------------------------------------------
