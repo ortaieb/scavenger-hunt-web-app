@@ -11,8 +11,9 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: {
         // tsconfig.test.json covers src, tests and the config files;
-        // tsconfig.json alone would leave tests unparsed.
-        project: ['./tsconfig.test.json'],
+        // tsconfig.json alone would leave tests unparsed. tsconfig.dom.json
+        // covers the tests that run a page in a DOM.
+        project: ['./tsconfig.test.json', './tsconfig.dom.json'],
         tsconfigRootDir: import.meta.dirname,
       },
     },

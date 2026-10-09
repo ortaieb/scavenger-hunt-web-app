@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { createApp, fetchWithTimeout } from '../src/app.js';
+import { FAILURE_TEXT, STEP_LABELS } from '../src/public/designer-logic.js';
 
 const testConfig = { gameServerUrl: 'http://game-server.test', gameServerTimeoutMs: 5000 };
 
@@ -151,6 +152,69 @@ describe('the moderator code', () => {
   });
 });
 
+describe('GET /designer', () => {
+  it('serves the hunt designer', async () => {
+    const response = await request(createApp(testConfig)).get('/designer');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toMatch(/^text\/html/);
+    expect(response.text).toContain('<script type="module" src="/designer.js"></script>');
+  });
+
+  it('serves it with a draft id in the link too', async () => {
+    const response = await request(createApp(testConfig)).get(`/designer?draft=${VALID_SESSION}`);
+
+    expect(response.status).toBe(200);
+    expect(response.text).toContain('<script type="module" src="/designer.js"></script>');
+  });
+
+  it('asks for the key, and posts the design form, in forms that never put them in a URL', async () => {
+    const response = await request(createApp(testConfig)).get('/designer');
+
+    expect(response.text).toMatch(/<form id="sign-in-form" method="post"/);
+    expect(response.text).toMatch(/id="organiser-key"[\s\S]*?type="password"/);
+    expect(response.text).toMatch(/<form id="design-form" method="post"/);
+  });
+
+  it('has the form fields, with the contract limits and defaults', async () => {
+    const response = await request(createApp(testConfig)).get('/designer');
+
+    expect(response.text).toMatch(/id="area"[\s\S]*?maxlength="200"/);
+    expect(response.text).toMatch(/id="theme"[\s\S]*?maxlength="200"/);
+    expect(response.text).toMatch(/id="checkpoints-count"[\s\S]*?min="3"\s+max="8"[\s\S]*?value="3"/);
+    expect(response.text).toMatch(/id="max-walk-km"[\s\S]*?min="0.5"\s+max="10"[\s\S]*?value="3"/);
+  });
+});
+
+describe.each(['/designer.js', '/designer-logic.js', '/designer.css'])('GET %s', (asset) => {
+  it('is served', async () => {
+    const response = await request(createApp(testConfig)).get(asset);
+
+    expect(response.status).toBe(200);
+  });
+});
+
+describe('the organiser key', () => {
+  it.each(['/designer.js', '/designer-logic.js'])('is never kept in localStorage by %s', async (asset) => {
+    const response = await request(createApp(testConfig)).get(asset);
+
+    expect(response.text).not.toContain('localStorage');
+  });
+
+  it('is kept in sessionStorage and sent only as a Bearer token', async () => {
+    const response = await request(createApp(testConfig)).get('/designer.js');
+
+    expect(response.text).toContain('sessionStorage.setItem');
+    expect(response.text).toContain('authorization: `Bearer ${');
+  });
+
+  it.each(['/designer.js', '/designer-logic.js'])('is never logged by %s, nor anything from a draft', async (asset) => {
+    const response = await request(createApp(testConfig)).get(asset);
+
+    expect(response.text).not.toMatch(/console\./);
+  });
+});
+
 describe('GET /privacy', () => {
   it('renders the privacy notice as HTML, without the notes for whoever fills it in', async () => {
     const response = await request(createApp(testConfig)).get('/privacy');
@@ -185,6 +249,27 @@ describe('GET /moderator-guide', () => {
 
     expect(response.status).toBe(200);
     expect(response.text).toContain('<h1>Moderator guide</h1>');
+  });
+});
+
+describe('GET /organiser-guide', () => {
+  it('renders the organiser guide as HTML, with a way back to the designer', async () => {
+    const response = await request(createApp(testConfig)).get('/organiser-guide');
+
+    expect(response.status).toBe(200);
+    expect(response.text).toContain('<h1>Organiser guide</h1>');
+    expect(response.text).toContain('<a class="doc-back" href="/designer">‹ Back to the designer</a>');
+  });
+
+  it('explains every progress step and every failure the designer screen shows', async () => {
+    const response = await request(createApp(testConfig)).get('/organiser-guide');
+
+    for (const label of Object.values(STEP_LABELS)) {
+      expect(response.text).toContain(label);
+    }
+    for (const text of Object.values(FAILURE_TEXT)) {
+      expect(response.text).toContain(text.replaceAll("'", '&#39;'));
+    }
   });
 });
 
@@ -1294,6 +1379,213 @@ describe('moderator relays', () => {
           .post('/moderator/ruling')
           .set('Authorization', secret)
           .send({ session: VALID_SESSION, submission: 42, ruling: 'approve', note });
+      }
+
+      for (const spy of logged) {
+        expect(spy).not.toHaveBeenCalled();
+      }
+    } finally {
+      for (const spy of logged) {
+        spy.mockRestore();
+      }
+    }
+  });
+});
+
+describe('designer relays', () => {
+  const ORGANISER_AUTH = 'Bearer organiser-key-of-24-characters';
+  const DRAFT = '5b0c7a1e-1111-4111-8111-111111111111';
+  const designRequest = { area: 'Chiswick, London', theme: 'The Thames', checkpoints: 3, 'max-walk-km': 3 };
+  const draft = {
+    id: DRAFT,
+    status: 'ready',
+    request: designRequest,
+    checkpoints: [
+      {
+        position: 1,
+        place: { osm: 'node/1', name: 'Lantern Gate', kind: 'historic=memorial', location: { lat: 51.49, long: -0.26 } },
+        clue: 'Where old lamps once lit the way in.',
+        challenge: { scene: 'The lantern gate, seen from the path.', pose: 'Point at the lamp' },
+      },
+    ],
+    'created-at': '2026-10-08T09:00:00Z',
+  };
+  const list = { drafts: [{ id: DRAFT, status: 'ready', area: 'Chiswick, London', theme: 'The Thames' }] };
+
+  // Each relay, with how to call it and what it relays to.
+  const relays = [
+    {
+      name: 'POST /designer/drafts',
+      method: 'POST',
+      upstreamPath: '/designer/drafts',
+      body: designRequest,
+      success: { status: 202, body: { id: DRAFT, status: 'running' } },
+      send: (app: ReturnType<typeof createApp>) => request(app).post('/designer/drafts').send(designRequest),
+    },
+    {
+      name: 'GET /designer/drafts',
+      method: 'GET',
+      upstreamPath: '/designer/drafts',
+      body: undefined,
+      success: { status: 200, body: list },
+      send: (app: ReturnType<typeof createApp>) => request(app).get('/designer/drafts'),
+    },
+    {
+      name: 'GET /designer/drafts/:draft',
+      method: 'GET',
+      upstreamPath: `/designer/drafts/${DRAFT}`,
+      body: undefined,
+      success: { status: 200, body: draft },
+      send: (app: ReturnType<typeof createApp>) => request(app).get(`/designer/drafts/${DRAFT}`),
+    },
+  ] as const;
+
+  describe.each(relays)('$name', ({ method, upstreamPath, body, success, send }) => {
+    it('forwards the path, method, body and Authorization header, and passes the response through, uncached', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(success.status, success.body)));
+
+      const response = await send(createApp(testConfig, { fetch: fetchMock })).set('Authorization', ORGANISER_AUTH);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [calledUrl, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect((calledUrl as URL).href).toBe(`http://game-server.test${upstreamPath}`);
+      expect(init?.method).toBe(method);
+      if (body === undefined) {
+        expect(init?.headers).toEqual({ authorization: ORGANISER_AUTH });
+        expect(init?.body).toBeUndefined();
+      } else {
+        expect(init?.headers).toEqual({ authorization: ORGANISER_AUTH, 'content-type': 'application/json' });
+        expect(JSON.parse(init?.body as string)).toEqual(body);
+      }
+
+      expect(response.status).toBe(success.status);
+      expect(response.headers['content-type']).toContain('application/json');
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.body).toEqual(success.body);
+    });
+
+    it('forwards a missing Authorization header as missing, and passes the 401 back', async () => {
+      const unauthorised = { detail: 'organiser key required', code: 'organiser_unauthorised' };
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(401, unauthorised)));
+
+      const response = await send(createApp(testConfig, { fetch: fetchMock }));
+
+      const [, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect(init?.headers).toEqual(body === undefined ? {} : { 'content-type': 'application/json' });
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual(unauthorised);
+    });
+
+    it('returns 502 when the game server cannot be reached', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.reject(new Error('connect ECONNREFUSED')));
+
+      const response = await send(createApp(testConfig, { fetch: fetchMock })).set('Authorization', ORGANISER_AUTH);
+
+      expect(response.status).toBe(502);
+      expect((response.body as ErrorBody).error).toContain('connect ECONNREFUSED');
+    });
+
+    it('returns 504 when the game server does not respond within the configured timeout', async () => {
+      const fetchMock: typeof fetch = vi.fn((_input, init?: FetchInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        }),
+      );
+
+      const response = await send(createApp({ ...testConfig, gameServerTimeoutMs: 30 }, { fetch: fetchMock })).set(
+        'Authorization',
+        ORGANISER_AUTH,
+      );
+
+      expect(response.status).toBe(504);
+    });
+  });
+
+  describe('POST /designer/drafts', () => {
+    it.each([
+      [409, { detail: 'a design is already running', code: 'designer_busy' }],
+      [503, { detail: 'the hunt designer is not available', code: 'designer_disabled' }],
+      [422, { detail: [{ type: 'extra_forbidden', loc: ['body', 'colour'], msg: 'Extra inputs are not permitted' }] }],
+    ])('passes a %s with its body through unchanged', async (status, body) => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(status, body)));
+
+      const response = await relays[0].send(createApp(testConfig, { fetch: fetchMock })).set('Authorization', ORGANISER_AUTH);
+
+      expect(response.status).toBe(status);
+      expect(response.body).toEqual(body);
+    });
+
+    it('sends the request upstream as sent: the game-server alone decides whether it is valid', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(422, { detail: [] })));
+      const odd = { area: 'x', checkpoints: 99, colour: 'red' };
+
+      await request(createApp(testConfig, { fetch: fetchMock }))
+        .post('/designer/drafts')
+        .set('Authorization', ORGANISER_AUTH)
+        .send(odd);
+
+      const [, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect(JSON.parse(init?.body as string)).toEqual(odd);
+    });
+
+    it('sends an empty object upstream for a request with no body', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(422, { detail: [] })));
+
+      await request(createApp(testConfig, { fetch: fetchMock })).post('/designer/drafts').set('Authorization', ORGANISER_AUTH);
+
+      const [, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect(JSON.parse(init?.body as string)).toEqual({});
+    });
+  });
+
+  describe('GET /designer/drafts/:draft', () => {
+    it('passes back a 404 for an unknown draft unchanged', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(404, { detail: 'unknown draft' })));
+
+      const response = await relays[2].send(createApp(testConfig, { fetch: fetchMock })).set('Authorization', ORGANISER_AUTH);
+
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({ detail: 'unknown draft' });
+    });
+
+    it.each([
+      ['not a UUID', 'not-a-uuid'],
+      ['a UUID with more after it', `${DRAFT}x`],
+      ['a UUID and a path', `${DRAFT}%2F..%2F..%2Fsessions`],
+      ['a path out of the drafts', '..%2F..%2Fhealth'],
+    ])('rejects a draft id that is %s with 400, and sends nothing upstream', async (_label, draftId) => {
+      const fetchMock: typeof fetch = vi.fn();
+
+      const response = await request(createApp(testConfig, { fetch: fetchMock }))
+        .get(`/designer/drafts/${draftId}`)
+        .set('Authorization', ORGANISER_AUTH);
+
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({ error: 'draft must be a valid UUID' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('never logs the organiser key or anything from a draft, whatever the outcome', async () => {
+    const secret = 'Bearer never-log-this-organiser-key';
+    const logged = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => undefined),
+    );
+    try {
+      for (const upstream of [
+        () => Promise.resolve(jsonResponse(200, draft)),
+        () => Promise.resolve(jsonResponse(202, { id: DRAFT, status: 'running' })),
+        () => Promise.resolve(jsonResponse(401, { detail: 'organiser key required', code: 'organiser_unauthorised' })),
+        () => Promise.resolve(jsonResponse(409, { detail: 'a design is already running', code: 'designer_busy' })),
+        () => Promise.reject(new Error('connect ECONNREFUSED')),
+      ]) {
+        const app = createApp(testConfig, { fetch: vi.fn(upstream) });
+        await request(app).post('/designer/drafts').set('Authorization', secret).send(designRequest);
+        await request(app).get('/designer/drafts').set('Authorization', secret);
+        await request(app).get(`/designer/drafts/${DRAFT}`).set('Authorization', secret);
+        await request(app).get('/designer/drafts/not-a-uuid').set('Authorization', secret);
       }
 
       for (const spy of logged) {

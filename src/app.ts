@@ -65,7 +65,11 @@ function escapeHtml(text: string): string {
  * like /play. HTML comments (notes to whoever fills in the doc) are
  * dropped. Read and rendered once, on first request.
  */
-function markdownPage(file: string, title: string): () => Promise<string> {
+function markdownPage(
+  file: string,
+  title: string,
+  back: { href: string; text: string } = { href: '/play', text: 'Back to the game' },
+): () => Promise<string> {
   let page: Promise<string> | undefined;
   return () => {
     page ??= readFile(path.join(docsDir, file), 'utf8')
@@ -83,7 +87,7 @@ function markdownPage(file: string, title: string): () => Promise<string> {
   </head>
   <body>
     <main class="doc">
-      <a class="doc-back" href="/play">‹ Back to the game</a>
+      <a class="doc-back" href="${escapeHtml(back.href)}">‹ ${escapeHtml(back.text)}</a>
 ${body}
     </main>
   </body>
@@ -105,6 +109,7 @@ const DOC_ROUTES: Record<string, string> = {
   'privacy-notice.md': '/privacy',
   'user-guide.md': '/how-to-play',
   'moderator-guide.md': '/moderator-guide',
+  'organiser-guide.md': '/organiser-guide',
 };
 
 function rewriteDocLinks(html: string): string {
@@ -164,6 +169,14 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     res.sendFile(path.join(publicDir, 'moderator.html'));
   });
 
+  // The hunt designer (see issue #59), for the organiser, before any session
+  // exists. The organiser key is typed on the page and only ever sent in the
+  // Authorization header; the only thing in the URL is a draft's id
+  // (/designer?draft=<uuid>).
+  app.get('/designer', (_req: Request, res: ExpressResponse) => {
+    res.sendFile(path.join(publicDir, 'designer.html'));
+  });
+
   const privacyPage = markdownPage('privacy-notice.md', 'Your photos and privacy');
   app.get('/privacy', async (_req: Request, res: ExpressResponse) => {
     res.type('html').send(await privacyPage());
@@ -177,6 +190,14 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   const moderatorGuidePage = markdownPage('moderator-guide.md', 'Moderator guide');
   app.get('/moderator-guide', async (_req: Request, res: ExpressResponse) => {
     res.type('html').send(await moderatorGuidePage());
+  });
+
+  const organiserGuidePage = markdownPage('organiser-guide.md', 'Organiser guide', {
+    href: '/designer',
+    text: 'Back to the designer',
+  });
+  app.get('/organiser-guide', async (_req: Request, res: ExpressResponse) => {
+    res.type('html').send(await organiserGuidePage());
   });
 
   // The guides' screenshots, linked as `images/…` so they also show on
@@ -409,18 +430,25 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     }
   });
 
-  // Relays the moderator's session controls, overview, review queue,
-  // rulings and photos, for the same HTTPS/CORS reasons as the other relays
-  // (see issues #39 and #55). Each route validates what goes into the
-  // upstream path (400 otherwise, nothing sent upstream). The moderator code
-  // travels in the Authorization header: forwarded unchanged when present,
+  // Relays a call that carries a secret in the Authorization header: the
+  // moderator's session controls, overview, review queue, rulings and photos
+  // (see issues #39 and #55), and the organiser's hunt designer (see issue
+  // #59). The browser can't call the game-server directly, for the same
+  // HTTPS/CORS reasons as the other relays. Each route validates what goes
+  // into the upstream path first (400 otherwise, nothing sent upstream). The
+  // moderator code or organiser key is forwarded unchanged when present,
   // never added or defaulted when missing (so the game-server answers 401
   // itself), and never logged.
-  async function relayModerator(
+  async function relayAuthorised(
     req: Request,
     res: ExpressResponse,
     upstreamPath: string,
-    { method = 'GET', body, photo = false }: { method?: 'GET' | 'POST'; body?: unknown; photo?: boolean } = {},
+    {
+      method = 'GET',
+      body,
+      photo = false,
+      noStore = photo,
+    }: { method?: 'GET' | 'POST'; body?: unknown; photo?: boolean; noStore?: boolean } = {},
   ): Promise<void> {
     const authorization = req.get('authorization');
     const headers: Record<string, string> = authorization === undefined ? {} : { authorization };
@@ -436,14 +464,16 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
         config.gameServerTimeoutMs,
       );
       res.status(upstream.status).type(upstream.headers.get('content-type') ?? 'application/json');
+      if (noStore) {
+        // Kept by neither the browser nor a proxy.
+        res.set('cache-control', 'no-store');
+      }
       if (!photo) {
         res.send(await upstream.text());
         return;
       }
       // A player's photo, or a reference photo that can show the answer to
-      // a clue: streamed straight through, never kept here, and never by
-      // the browser or a proxy either.
-      res.set('cache-control', 'no-store');
+      // a clue: streamed straight through, never kept here.
       if (upstream.body) {
         await pipeline(Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>), res);
       } else {
@@ -474,7 +504,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
         res.status(400).json({ error: 'session must be a valid UUID' });
         return;
       }
-      await relayModerator(req, res, `${sessionPath(session)}/${action}`, { method: 'POST' });
+      await relayAuthorised(req, res, `${sessionPath(session)}/${action}`, { method: 'POST' });
     });
   }
 
@@ -487,7 +517,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
         res.status(400).json({ error: 'session must be a valid UUID' });
         return;
       }
-      await relayModerator(req, res, `${sessionPath(session)}/${view}`);
+      await relayAuthorised(req, res, `${sessionPath(session)}/${view}`);
     });
   }
 
@@ -504,7 +534,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
       res.status(400).json({ error: 'submission must be an integer >= 1' });
       return;
     }
-    await relayModerator(req, res, `${sessionPath(session)}/submissions/${submission}/ruling`, {
+    await relayAuthorised(req, res, `${sessionPath(session)}/submissions/${submission}/ruling`, {
       method: 'POST',
       body: { ruling, note },
     });
@@ -521,7 +551,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
       res.status(400).json({ error: 'submission must be an integer >= 1' });
       return;
     }
-    await relayModerator(req, res, `${sessionPath(session)}/submissions/${submissionId}/photo`, { photo: true });
+    await relayAuthorised(req, res, `${sessionPath(session)}/submissions/${submissionId}/photo`, { photo: true });
   });
 
   app.get('/moderator/reference-photo', async (req: Request, res: ExpressResponse) => {
@@ -540,9 +570,32 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
       res.status(400).json({ error: 'position must be an integer >= 0' });
       return;
     }
-    await relayModerator(req, res, `${sessionPath(session)}/checkpoints/${sequence}/reference-photos/${index}`, {
+    await relayAuthorised(req, res, `${sessionPath(session)}/checkpoints/${sequence}/reference-photos/${index}`, {
       photo: true,
     });
+  });
+
+  // The hunt designer's drafts (see issue #59), with the organiser key in
+  // the Authorization header. A draft's clues, scenes and coordinates are
+  // the answers to its hunt: relayed as they come, never logged, and kept by
+  // neither the browser's cache nor a proxy.
+  app.post('/designer/drafts', express.json(), async (req: Request, res: ExpressResponse) => {
+    // The request (area, theme, checkpoints, max-walk-km) goes upstream as
+    // sent: the game-server alone decides whether it's valid.
+    await relayAuthorised(req, res, '/designer/drafts', { method: 'POST', body: req.body ?? {}, noStore: true });
+  });
+
+  app.get('/designer/drafts', async (req: Request, res: ExpressResponse) => {
+    await relayAuthorised(req, res, '/designer/drafts', { noStore: true });
+  });
+
+  app.get('/designer/drafts/:draft', async (req: Request, res: ExpressResponse) => {
+    const { draft } = req.params;
+    if (!isValidUuid(draft)) {
+      res.status(400).json({ error: 'draft must be a valid UUID' });
+      return;
+    }
+    await relayAuthorised(req, res, `/designer/drafts/${encodeURIComponent(draft)}`, { noStore: true });
   });
 
   return app;

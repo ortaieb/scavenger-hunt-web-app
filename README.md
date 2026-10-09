@@ -4,7 +4,8 @@ Scavenger Hunt mobile application — TypeScript web service running on Node.js.
 
 ## How to play
 
-This README is for developers. Players and moderators have their own guides:
+This README is for developers. Players, moderators and the organiser have
+their own guides:
 
 - **[User guide](docs/user-guide.md)**: joining, permissions, the status
   bar, playing a checkpoint and what to do when something goes wrong. Served
@@ -12,6 +13,9 @@ This README is for developers. Players and moderators have their own guides:
 - **[Moderator guide](docs/moderator-guide.md)**: starting and finishing the
   session, following the standings, reviewing photos and announcing the
   winners. Served at `/moderator-guide`.
+- **[Organiser guide](docs/organiser-guide.md)**: designing a hunt with the
+  hunt designer, what its progress steps mean and what each failure means.
+  Served at `/organiser-guide`.
 - **[Privacy notice](docs/privacy-notice.md)**: served at `/privacy`.
 
 The guides' screenshots are in `docs/images/`, served at `/images/`.
@@ -410,6 +414,88 @@ The game-loop relays forward bodies verbatim, so the game-server's newer
 fields (`session` and `score` in `/state`, `code` in error bodies) pass
 through unchanged.
 
+### /designer
+
+The hunt designer (issue #59), for the organiser before any session exists:
+`/designer`. Given an area and a theme, the game-server's hunt-designer
+agent picks checkpoints from map data and writes their clues, as a
+**draft**; this screen starts a design and follows it until the draft is
+`ready` or `failed`. The [organiser guide](docs/organiser-guide.md) is
+served at `/organiser-guide`.
+
+- **The organiser key** (the game-server's `GAME_SERVER_ORGANISER_KEY`) is
+  typed once, kept in `sessionStorage` (in memory if storage throws) and
+  sent only as `Authorization: Bearer <key>`. **Forget key** clears it, and
+  a `401` from any relay clears it and asks again.
+- **New design**: area and theme (3–200 characters, trimmed), checkpoints
+  (3–8, default 3) and the longest walk in km (0.5–10, default 3), checked
+  in the page against the game-server's limits before anything is sent.
+  The button is disabled while sending. A `409 designer_busy` says "A
+  design is already running", with a link to it (found in the drafts list,
+  since the `409` doesn't name it); a `503 designer_disabled` says "The
+  hunt designer isn't switched on on the game-server." Either way the form
+  stays as it was.
+- **Drafts**, newest first: status, area, theme, when it started and, once
+  it's finished, its cost. Each is a link to `/designer?draft=<id>`, opened
+  in place. The list refreshes when a design starts or finishes, and every
+  5 s while it shows a running draft that isn't the open one.
+- **A running draft** is polled every 2 s while the page is visible, and no
+  longer once it's `ready` or `failed`. It shows the time elapsed (by the
+  server's clock, from the relay's `Date` header) and the `progress` steps
+  as a growing list, each with a friendly label ("Looking for places: 58
+  candidate places"), or the raw step name for one the page doesn't know.
+- **A failed draft** explains its `run.error.code` in plain words, lists
+  the problems from its last attempt, and has **Try again**, which fills in
+  the form with the same request.
+- **A ready draft** lists its checkpoints read-only: name, clue and pose,
+  with the map data's attribution.
+
+A draft's clues, scenes and coordinates are the answers to its hunt.
+Nothing from a draft, and never the key, is written to `localStorage`, put
+in the URL (other than the draft's id) or logged, by the page or by this
+app; error messages are fixed text, so the key can't appear in one.
+
+The pure logic is in `designer-logic.js`, unit-tested like
+`moderator-logic.js`. `tests/designer-page.dom.test.ts` also runs the page's
+own `designer.js` in [happy-dom](https://github.com/capricorn86/happy-dom),
+against a stub of the designer API: a design run to `ready`, busy and
+disabled, the key, failures, and a spy on `localStorage`.
+
+### Designer relays
+
+Relays for the hunt designer (issue #59), sharing the moderator relays'
+code: `fetchWithTimeout` with `GAME_SERVER_TIMEOUT_MS` (`504` on a
+timeout, `502` when the game-server can't be reached), otherwise the
+upstream status, content type and body unchanged, with `Cache-Control:
+no-store`.
+
+| This app | Game-server | Body |
+| --- | --- | --- |
+| `POST /designer/drafts` | `POST ${GAME_SERVER_URL}/designer/drafts` | `{"area", "theme", "checkpoints", "max-walk-km"}`, as sent |
+| `GET /designer/drafts` | `GET ${GAME_SERVER_URL}/designer/drafts` | none |
+| `GET /designer/drafts/:draft` | `GET ${GAME_SERVER_URL}/designer/drafts/{draft}` | none |
+
+`draft` must be a UUID (`400` otherwise, nothing sent upstream). A new
+design's body goes upstream as sent: the game-server alone decides whether
+it's valid (`422` otherwise). The organiser key travels in the
+**`Authorization` header**, forwarded unchanged when present, never added
+or defaulted, and **never logged**; without it the game-server answers
+`401 {"detail": "organiser key required", "code": "organiser_unauthorised"}`.
+
+Starting a design answers `202 {"id", "status": "running"}`, or `409
+{"code": "designer_busy"}` while another is running, or `503 {"code":
+"designer_disabled"}` when the game-server can't run the designer. The list
+answers `{"drafts": [{"id", "status", "area", "theme", "created-at",
+"finished-at", "checkpoints", "cost-usd"}]}`, newest first, at most 50. A
+draft answers in full: its `request`, `progress`, `checkpoints`,
+`problems`, `run` (with `error.code` on a failed one) and `attribution`, or
+`404` for an unknown draft. See the game-server's
+[API docs](https://github.com/ortaieb/scavenger-hunt-game-server/blob/main/docs/api.md#hunt-designer).
+
+To try it locally, run the game-server with `GAME_SERVER_DESIGNER_RUNNER=stub`
+and a `GAME_SERVER_ORGANISER_KEY` of at least 24 characters: every design is
+then the same three fictional checkpoints, ready in a second or so.
+
 ## Scripts
 
 | Script              | Description                                  |
@@ -418,7 +504,7 @@ through unchanged.
 | `npm run build`     | Compile TypeScript and copy static assets into `dist/` |
 | `npm start`         | Run the compiled server from `dist/`          |
 | `npm run certs:dev` | Generate a self-signed TLS cert for local HTTPS testing |
-| `npm run typecheck` | Type-check sources, tests and config files    |
+| `npm run typecheck` | Type-check sources, tests and config files (tests that run a page in a DOM with `tsconfig.dom.json`) |
 | `npm run lint`      | ESLint (type-aware rules)                     |
 | `npm test`          | Run the Vitest suite                          |
 
@@ -452,19 +538,22 @@ src/
   app.ts       Express app factory and routes
   config.ts    environment parsing and validation
   server.ts    HTTP/HTTPS server construction
-  public/      static assets for /play and /challenge (html, css, client js)
+  public/      static assets for /play, /challenge, /moderator and /designer (html, css, client js)
     game-logic.js       pure screen/instruction/error logic for /play, unit tested directly
     moderator-logic.js  pure phase/standings/blocked/review logic for /moderator, unit tested directly
     moderator.js        /moderator's DOM, sign-in, polling, photo and ruling wiring
+    designer-logic.js   pure form/progress/failure/draft logic for /designer, unit tested directly
+    designer.js         /designer's DOM, organiser key, design form and draft polling wiring
     api.js              /play's calls to this app's relays, with timeouts (and /challenge's check-in)
     play.js             /play's DOM/permissions/polling wiring
     challenge-logic.js  pure identity/check-in/verdict/hint logic, unit tested directly
     camera.js           camera, location and proximity code shared by /play and /challenge
     challenge.js        DOM/fetch wiring for /challenge, imports challenge-logic.js and camera.js
-docs/          player and moderator guides and the privacy notice, served at
-               /how-to-play, /moderator-guide and /privacy (screenshots in docs/images)
+docs/          player, moderator and organiser guides and the privacy notice, served at
+               /how-to-play, /moderator-guide, /organiser-guide and /privacy
+               (screenshots in docs/images)
 scripts/       dev tooling (self-signed cert generation)
-tests/         Vitest suites
+tests/         Vitest suites (*.dom.test.ts run a page's script in happy-dom)
 ```
 
 `app.ts` builds the app without binding a port, so tests exercise the routes
