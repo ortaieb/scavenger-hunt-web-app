@@ -164,6 +164,14 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     res.sendFile(path.join(publicDir, 'moderator.html'));
   });
 
+  // The hunt designer (see issue #59), for the organiser, before any session
+  // exists. The organiser key is typed on the page and only ever sent in the
+  // Authorization header; the only thing in the URL is a draft's id
+  // (/designer?draft=<uuid>).
+  app.get('/designer', (_req: Request, res: ExpressResponse) => {
+    res.sendFile(path.join(publicDir, 'designer.html'));
+  });
+
   const privacyPage = markdownPage('privacy-notice.md', 'Your photos and privacy');
   app.get('/privacy', async (_req: Request, res: ExpressResponse) => {
     res.type('html').send(await privacyPage());

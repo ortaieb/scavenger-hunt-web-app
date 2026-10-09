@@ -1,0 +1,509 @@
+// Pure, DOM-free logic for the hunt designer at /designer (issue #59),
+// unit-tested with Vitest like moderator-logic.js. It checks the New design
+// form against the game-server's limits, and describes what the designer
+// API says: the drafts, a running draft's progress, why a draft failed, and
+// a ready draft's checkpoints.
+//
+// A draft's clues, scenes and coordinates are the answers to its hunt: this
+// file only shapes them for the screen. Nothing here stores or logs them.
+
+import { formatCountdown } from './game-logic.js';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * @typedef {{ area: string, theme: string, checkpoints: number, 'max-walk-km': number }} DesignRequest
+ * @typedef {{ at: string, step: string, summary: string }} ProgressEntry
+ * @typedef {{
+ *   position: number,
+ *   place: { osm?: string, name: string, kind?: string, location?: { lat: number, long: number } },
+ *   clue: string,
+ *   challenge: { scene: string, pose: string },
+ *   proximity?: number,
+ *   rationale?: string,
+ *   review?: string,
+ * }} DraftCheckpoint
+ * @typedef {{ code: string, position: number | null, message: string }} DraftProblem
+ * @typedef {{
+ *   runner?: string,
+ *   model?: string | null,
+ *   turns?: number,
+ *   'cost-usd'?: number,
+ *   'duration-ms'?: number | null,
+ *   error?: { code: string } | null,
+ * }} DraftRun
+ * @typedef {{
+ *   id: string,
+ *   status: string,
+ *   request: DesignRequest,
+ *   area?: { name: string, clipped?: boolean } | null,
+ *   progress?: ProgressEntry[],
+ *   checkpoints?: DraftCheckpoint[],
+ *   route?: { 'legs-m': number[], 'loop-m': number } | null,
+ *   problems?: DraftProblem[],
+ *   run?: DraftRun,
+ *   attribution?: string,
+ *   'created-at': string,
+ *   'finished-at'?: string | null,
+ * }} Draft
+ * @typedef {{
+ *   id: string,
+ *   status: string,
+ *   area: string,
+ *   theme: string,
+ *   'created-at': string,
+ *   'finished-at'?: string | null,
+ *   checkpoints?: number,
+ *   'cost-usd'?: number,
+ * }} DraftListItem
+ */
+
+/**
+ * @param {unknown} value
+ * @returns {value is string} whether it's a draft id (a UUID)
+ */
+export function isDraftId(value) {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+
+/**
+ * The open draft's id from the link, /designer?draft=<uuid>: the only
+ * thing from a draft that goes in the URL.
+ *
+ * @param {URLSearchParams} searchParams
+ * @returns {string | null}
+ */
+export function readDraftId(searchParams) {
+  const draft = searchParams.get('draft');
+  return isDraftId(draft) ? draft : null;
+}
+
+// --- New design ----------------------------------------------------------------
+
+/** The game-server's limits for a design request. */
+export const LIMITS = Object.freeze({
+  text: { min: 3, max: 200 },
+  checkpoints: { min: 3, max: 8, default: 3 },
+  maxWalkKm: { min: 0.5, max: 10, default: 3 },
+});
+
+/**
+ * The New design form, as typed.
+ *
+ * @typedef {{ area: string, theme: string, checkpoints: string, maxWalkKm: string }} DesignForm
+ * @typedef {Partial<Record<keyof DesignForm, string>>} FormErrors
+ */
+
+/**
+ * @param {string} value
+ * @param {string} what
+ * @returns {string} the error, or ''
+ */
+function textError(value, what) {
+  const { min, max } = LIMITS.text;
+  if (value.length < min) {
+    return `Enter the ${what}: at least ${min} characters.`;
+  }
+  if (value.length > max) {
+    return `Keep the ${what} to ${max} characters or fewer.`;
+  }
+  return '';
+}
+
+/**
+ * @param {string} value
+ * @returns {number} NaN unless it's a plain decimal number
+ */
+function parseNumber(value) {
+  const trimmed = value.trim();
+  return /^\d+(\.\d+)?$|^\.\d+$/.test(trimmed) ? Number(trimmed) : NaN;
+}
+
+/**
+ * Checks the New design form against the game-server's limits, so a bad
+ * value is caught in the page. Area and theme are trimmed, as the
+ * game-server trims them.
+ *
+ * @param {DesignForm} form
+ * @returns {{ request: DesignRequest | null, errors: FormErrors }} `request`
+ *   is what to post, or null when `errors` has anything in it
+ */
+export function validateDesign(form) {
+  const area = String(form.area ?? '').trim();
+  const theme = String(form.theme ?? '').trim();
+  const checkpoints = parseNumber(String(form.checkpoints ?? ''));
+  const maxWalkKm = parseNumber(String(form.maxWalkKm ?? ''));
+
+  /** @type {FormErrors} */
+  const errors = {};
+  const areaError = textError(area, 'area');
+  if (areaError) {
+    errors.area = areaError;
+  }
+  const themeError = textError(theme, 'theme');
+  if (themeError) {
+    errors.theme = themeError;
+  }
+  const c = LIMITS.checkpoints;
+  if (!Number.isInteger(checkpoints) || checkpoints < c.min || checkpoints > c.max) {
+    errors.checkpoints = `Choose a whole number of checkpoints from ${c.min} to ${c.max}.`;
+  }
+  const w = LIMITS.maxWalkKm;
+  if (!Number.isFinite(maxWalkKm) || maxWalkKm < w.min || maxWalkKm > w.max) {
+    errors.maxWalkKm = `Choose a walk from ${w.min} to ${w.max} km.`;
+  }
+
+  if (Object.keys(errors).length > 0) {
+    return { request: null, errors };
+  }
+  return { request: { area, theme, checkpoints, 'max-walk-km': maxWalkKm }, errors };
+}
+
+/**
+ * The form for Try again: a failed draft's request, with the defaults for
+ * anything missing.
+ *
+ * @param {Partial<DesignRequest> | null | undefined} request
+ * @returns {DesignForm}
+ */
+export function formFromRequest(request) {
+  const checkpoints = request?.checkpoints;
+  const maxWalkKm = request?.['max-walk-km'];
+  return {
+    area: typeof request?.area === 'string' ? request.area : '',
+    theme: typeof request?.theme === 'string' ? request.theme : '',
+    checkpoints: String(typeof checkpoints === 'number' ? checkpoints : LIMITS.checkpoints.default),
+    maxWalkKm: String(typeof maxWalkKm === 'number' ? maxWalkKm : LIMITS.maxWalkKm.default),
+  };
+}
+
+/**
+ * "3 checkpoints, up to 3 km".
+ *
+ * @param {Partial<DesignRequest> | null | undefined} request
+ * @returns {string}
+ */
+export function requestLine(request) {
+  const parts = [];
+  if (typeof request?.checkpoints === 'number') {
+    parts.push(`${request.checkpoints} checkpoints`);
+  }
+  if (typeof request?.['max-walk-km'] === 'number') {
+    parts.push(`up to ${request['max-walk-km']} km`);
+  }
+  return parts.join(', ');
+}
+
+// --- statuses, the drafts list -----------------------------------------------
+
+const STATUS_WORDS = {
+  running: 'Designing…',
+  ready: 'Ready',
+  failed: 'Failed',
+  published: 'Published',
+};
+
+/**
+ * @param {unknown} status
+ * @returns {string}
+ */
+export function statusLabel(status) {
+  return (typeof status === 'string' && STATUS_WORDS[status]) || String(status ?? 'Unknown');
+}
+
+/**
+ * While a draft is `running`, the page keeps polling it; `ready` and
+ * `failed` (and `published`) are final.
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {boolean}
+ */
+export function isRunning(draft) {
+  return draft?.status === 'running';
+}
+
+/** How often to poll a running draft while the page is visible. */
+export const DRAFT_POLL_MS = 2000;
+
+/** How often to refresh the drafts list while it shows a running draft. */
+export const LIST_POLL_MS = 5000;
+
+/**
+ * The drafts, newest first (the server already sends them that way; this
+ * keeps the screen right with any other order).
+ *
+ * @param {unknown} body the GET /designer/drafts response
+ * @returns {DraftListItem[]}
+ */
+export function newestFirst(body) {
+  const drafts = body && typeof body === 'object' && 'drafts' in body ? body.drafts : null;
+  if (!Array.isArray(drafts)) {
+    return [];
+  }
+  return drafts
+    .filter((draft) => draft && typeof draft === 'object' && isDraftId(draft.id))
+    .sort((a, b) => (Date.parse(b['created-at']) || 0) - (Date.parse(a['created-at']) || 0));
+}
+
+/**
+ * The draft that's running, to link to when another design can't start.
+ *
+ * @param {DraftListItem[]} drafts
+ * @returns {string | null}
+ */
+export function runningDraftId(drafts) {
+  return drafts.find((draft) => draft.status === 'running')?.id ?? null;
+}
+
+/**
+ * "$0.42". The cost is only known once the run has finished.
+ *
+ * @param {unknown} costUsd
+ * @returns {string}
+ */
+export function costWords(costUsd) {
+  return typeof costUsd === 'number' && Number.isFinite(costUsd) && costUsd >= 0 ? `$${costUsd.toFixed(2)}` : '';
+}
+
+/**
+ * When a draft was started, in the organiser's own time: "9 Oct, 10:03".
+ *
+ * @param {unknown} isoTime
+ * @returns {string}
+ */
+export function whenWords(isoTime) {
+  const time = typeof isoTime === 'string' ? Date.parse(isoTime) : NaN;
+  if (!Number.isFinite(time)) {
+    return '';
+  }
+  const date = new Date(time);
+  const day = date.toLocaleDateString([], { day: 'numeric', month: 'short' });
+  const clock = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return `${day}, ${clock}`;
+}
+
+/**
+ * One row of the drafts list: its status, area, theme, when it was
+ * started, and its cost once it's finished.
+ *
+ * @param {DraftListItem} draft
+ * @returns {{ status: string, area: string, theme: string, when: string, cost: string }}
+ */
+export function draftListLine(draft) {
+  return {
+    status: statusLabel(draft.status),
+    area: typeof draft.area === 'string' ? draft.area : '',
+    theme: typeof draft.theme === 'string' ? draft.theme : '',
+    when: whenWords(draft['created-at']),
+    cost: draft.status === 'running' ? '' : costWords(draft['cost-usd']),
+  };
+}
+
+// --- a running draft -----------------------------------------------------------
+
+/**
+ * Friendly names for the run's steps: the agent's tools, and the stub
+ * runner's own steps.
+ */
+export const STEP_LABELS = Object.freeze({
+  find_area: 'Finding the area',
+  resolve_area: 'Finding the area',
+  find_places: 'Looking for places',
+  place_details: 'Reading about a place',
+  measure_route: 'Measuring the route',
+  write_clues: 'Writing clues and challenges',
+  submit_draft: 'Checking the draft',
+  check_draft: 'Checking the draft',
+});
+
+/**
+ * A step's friendly name, or its raw name for a step this page doesn't know.
+ *
+ * @param {unknown} step
+ * @returns {string}
+ */
+export function stepLabel(step) {
+  if (typeof step !== 'string' || !step) {
+    return 'A step';
+  }
+  return Object.hasOwn(STEP_LABELS, step) ? STEP_LABELS[step] : step;
+}
+
+/**
+ * The run's steps so far, oldest first, e.g. "Looking for places: 58
+ * candidate places", each with how far into the run it came ("0:12").
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {{ at: string, text: string }[]}
+ */
+export function progressLines(draft) {
+  const steps = Array.isArray(draft?.progress) ? draft.progress : [];
+  const start = Date.parse(draft?.['created-at'] ?? '');
+  return steps
+    .filter((entry) => entry && typeof entry === 'object')
+    .map((entry) => {
+      const label = stepLabel(entry.step);
+      const summary = typeof entry.summary === 'string' ? entry.summary.trim() : '';
+      const at = Date.parse(entry.at);
+      return {
+        at: Number.isFinite(start) && Number.isFinite(at) ? formatCountdown(at - start) : '',
+        text: summary ? `${label}: ${summary}` : label,
+      };
+    });
+}
+
+/**
+ * How long a running draft has been going, by server time: "Running for
+ * 1:23".
+ *
+ * @param {Draft | null | undefined} draft
+ * @param {number} serverNow ms since the epoch, in server time
+ * @returns {string}
+ */
+export function elapsedLine(draft, serverNow) {
+  const start = Date.parse(draft?.['created-at'] ?? '');
+  return Number.isFinite(start) && Number.isFinite(serverNow)
+    ? `Running for ${formatCountdown(serverNow - start)}`
+    : 'Running';
+}
+
+/**
+ * How long a finished draft's run took and what it cost: "Took 3:41 · cost
+ * $0.42". '' while it's running.
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {string}
+ */
+export function runLine(draft) {
+  if (!draft || isRunning(draft)) {
+    return '';
+  }
+  const parts = [];
+  const durationMs = draft.run?.['duration-ms'];
+  const start = Date.parse(draft['created-at'] ?? '');
+  const end = Date.parse(draft['finished-at'] ?? '');
+  if (typeof durationMs === 'number' && durationMs >= 0) {
+    parts.push(`Took ${formatCountdown(durationMs)}`);
+  } else if (Number.isFinite(start) && Number.isFinite(end) && end >= start) {
+    parts.push(`Took ${formatCountdown(end - start)}`);
+  }
+  const cost = costWords(draft.run?.['cost-usd']);
+  if (cost) {
+    parts.push(`cost ${cost}`);
+  }
+  return parts.join(' · ');
+}
+
+// --- a failed draft ------------------------------------------------------------
+
+/** What each `run.error.code` means, for the organiser. */
+export const FAILURE_TEXT = Object.freeze({
+  max_turns: 'The designer ran out of steps.',
+  max_budget: 'It reached its spending limit.',
+  deadline: 'It took too long.',
+  no_valid_draft: "It couldn't produce a hunt that meets the rules.",
+  agent_unavailable: "The designer couldn't start.",
+  interrupted: 'The server restarted during the run.',
+});
+
+/**
+ * Why a draft failed, in plain words.
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {string}
+ */
+export function failureText(draft) {
+  const code = draft?.run?.error?.code;
+  if (typeof code === 'string' && Object.hasOwn(FAILURE_TEXT, code)) {
+    return FAILURE_TEXT[code];
+  }
+  return typeof code === 'string' && code ? `The design failed (${code}).` : 'The design failed.';
+}
+
+/**
+ * The problems from the run's last attempt: "Checkpoint 2: …", or the
+ * message alone for one about the whole draft.
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {string[]}
+ */
+export function problemLines(draft) {
+  const problems = Array.isArray(draft?.problems) ? draft.problems : [];
+  return problems
+    .filter((problem) => problem && typeof problem === 'object')
+    .map((problem) => {
+      const message =
+        typeof problem.message === 'string' && problem.message ? problem.message : String(problem.code ?? '');
+      return Number.isInteger(problem.position) ? `Checkpoint ${problem.position}: ${message}` : message;
+    })
+    .filter(Boolean);
+}
+
+// --- a ready draft -------------------------------------------------------------
+
+/**
+ * A ready draft's checkpoints, in route order, read-only: the place's
+ * name, the clue and the pose.
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {{ position: number, name: string, clue: string, pose: string }[]}
+ */
+export function checkpointRows(draft) {
+  const checkpoints = Array.isArray(draft?.checkpoints) ? draft.checkpoints : [];
+  return checkpoints
+    .filter((checkpoint) => checkpoint && typeof checkpoint === 'object')
+    .map((checkpoint, index) => ({
+      position: Number.isInteger(checkpoint.position) ? checkpoint.position : index + 1,
+      name: typeof checkpoint.place?.name === 'string' ? checkpoint.place.name : '',
+      clue: typeof checkpoint.clue === 'string' ? checkpoint.clue : '',
+      pose: typeof checkpoint.challenge?.pose === 'string' ? checkpoint.challenge.pose : '',
+    }))
+    .sort((a, b) => a.position - b.position);
+}
+
+// --- errors --------------------------------------------------------------------
+
+/**
+ * @typedef {{
+ *   message: string,
+ *   askForKey: boolean,
+ *   offline: boolean,
+ *   busy: boolean,
+ * }} DesignerError
+ */
+
+/**
+ * What a failed call to the designer relays means for the screen. Branches
+ * on the game-server's `code` when there is one, then on the status. The
+ * messages are fixed text: never the key, and never anything from a draft.
+ *
+ * @param {number} status 0 for a call that never came back
+ * @param {unknown} body
+ * @returns {DesignerError}
+ */
+export function designerError(status, body) {
+  const code = body && typeof body === 'object' && 'code' in body ? body.code : undefined;
+  const error = { askForKey: false, offline: false, busy: false };
+  if (status === 401) {
+    return { ...error, message: "That organiser key isn't right.", askForKey: true };
+  }
+  if (code === 'designer_busy') {
+    return { ...error, message: 'A design is already running.', busy: true };
+  }
+  if (code === 'designer_disabled') {
+    return { ...error, message: "The hunt designer isn't switched on on the game-server." };
+  }
+  if (status === 404) {
+    return { ...error, message: 'No draft with this id. Check the link.' };
+  }
+  if (status === 400) {
+    return { ...error, message: 'The link has no valid draft id.' };
+  }
+  if (status === 422) {
+    return { ...error, message: "The game-server didn't accept this design. Check the fields and try again." };
+  }
+  if (status === 0 || status === 502 || status === 503 || status === 504) {
+    return { ...error, message: 'No connection to the game server.', offline: true };
+  }
+  return { ...error, message: `Something went wrong (error ${status}).` };
+}

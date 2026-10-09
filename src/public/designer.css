@@ -1,0 +1,310 @@
+/* The hunt designer at /designer (issue #59). Builds on play.css (its
+   colours, buttons and messages) and moderator.css (its panels and the
+   Forget key button), and works from a phone up to a laptop. */
+
+.designer {
+  width: 100%;
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 1rem calc(1rem + var(--safe-right)) calc(2rem + var(--safe-bottom)) calc(1rem + var(--safe-left));
+  display: grid;
+  gap: 1rem;
+}
+
+.designer #workspace {
+  display: grid;
+  gap: 1rem;
+}
+
+.designer #workspace[hidden],
+.designer [hidden] {
+  display: none;
+}
+
+/* Opening a draft or Try again scrolls to it: clear of the sticky header. */
+.designer .panel,
+#design-form {
+  scroll-margin-top: 5rem;
+}
+
+.intro {
+  margin: -0.5rem 0 1rem;
+}
+
+/* Area and theme are plain text, unlike /play's join code. The key is a
+   password field like the moderator code. */
+.designer input[type='text'],
+.designer input[type='number'],
+.designer input[type='password'] {
+  width: 100%;
+  min-height: 48px;
+  padding: 0.5rem 0.75rem;
+  border: 2px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 1.05rem;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.designer .panel input[type='text'],
+.designer .panel input[type='number'],
+.designer .panel input[type='password'] {
+  background: var(--bg);
+}
+
+.designer input[aria-invalid='true'] {
+  border-color: var(--error-text);
+}
+
+.designer form .field-label {
+  margin: 0.5rem 0 0;
+}
+
+.field-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.field-pair > div {
+  display: grid;
+  align-content: start;
+  gap: 0.35rem;
+}
+
+.field-pair .field-label {
+  margin-top: 0.5rem;
+}
+
+.field-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* Colour is never the only signal: each error starts with a word. */
+.field-error {
+  margin: 0;
+  color: var(--error-text);
+  font-size: 0.95rem;
+}
+
+.field-error::before {
+  content: 'Problem: ';
+  font-weight: 700;
+}
+
+#design-form .message,
+#design-form .note {
+  margin: 0.5rem 0 0;
+}
+
+#design-form button {
+  margin-top: 0.75rem;
+}
+
+#design-error-link {
+  margin-left: 0.25rem;
+  font-weight: 700;
+}
+
+/* The open draft. */
+.draft-close {
+  display: inline-block;
+  margin-bottom: 0.5rem;
+}
+
+.draft-title {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.draft-theme {
+  margin: 0.25rem 0 0;
+  font-size: 1.1rem;
+  overflow-wrap: anywhere;
+}
+
+.draft-request {
+  margin: 0.25rem 0 0.75rem;
+}
+
+.draft-elapsed {
+  margin: 0.4rem 0 0;
+  font-size: 1.2rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.draft-elapsed:empty {
+  display: none;
+}
+
+.draft-section h2 {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+/* A status carries its meaning in words; the colour only repeats it. */
+.draft-status {
+  display: inline-block;
+  margin: 0;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  border: 2px solid var(--border);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.draft-status--running {
+  border-color: var(--warning-text);
+  color: var(--warning-text);
+}
+
+.draft-status--ready,
+.draft-status--published {
+  border-color: #4ade80;
+  color: #bbf7d0;
+}
+
+.draft-status--failed {
+  border-color: var(--error-text);
+  color: var(--error-text);
+}
+
+.failure-text {
+  margin: 1rem 0 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.problems {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.3rem;
+  overflow-wrap: anywhere;
+}
+
+#try-again {
+  margin-top: 1rem;
+}
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.steps li {
+  display: flex;
+  gap: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.step-time {
+  flex: none;
+  min-width: 3em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.checkpoints {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.checkpoint {
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.6rem;
+  background: var(--bg);
+}
+
+.checkpoint-name {
+  margin: 0 0 0.4rem;
+  font-size: 1.05rem;
+  overflow-wrap: anywhere;
+}
+
+.checkpoint-details {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.3rem 0.75rem;
+}
+
+.checkpoint-details dt {
+  color: var(--muted);
+}
+
+.checkpoint-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.attribution {
+  font-size: 0.85rem;
+}
+
+/* The drafts list: each draft is a link to it. */
+.drafts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.draft-link {
+  display: grid;
+  gap: 0.2rem;
+  min-height: 44px;
+  padding: 0.6rem 0.75rem;
+  border: 2px solid transparent;
+  border-radius: 0.6rem;
+  background: var(--bg);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.draft-link[aria-current='page'] {
+  border-color: var(--link);
+}
+
+.draft-link-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.6rem;
+}
+
+.draft-link-area {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.draft-link-theme {
+  overflow-wrap: anywhere;
+}
+
+.draft-link-meta {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.draft-link .draft-status {
+  font-size: 0.85rem;
+}
+
+.guide-link {
+  margin: 0;
+  text-align: center;
+}

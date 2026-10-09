@@ -1,0 +1,11 @@
+{
+  // Tests that run a page's script in happy-dom (e.g. the hunt designer's,
+  // issue #59), with the DOM's types. Kept apart from tsconfig.test.json so
+  // the server code is never checked against the browser's globals.
+  "extends": "./tsconfig.test.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
+  },
+  "include": ["tests/**/*.dom.test.ts"],
+  "exclude": []
+}

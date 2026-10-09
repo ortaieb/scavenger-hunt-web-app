@@ -16,7 +16,7 @@
     "dev": "node --watch src/index.ts",
     "certs:dev": "scripts/generate-dev-certs.sh",
     "lint": "eslint .",
-    "typecheck": "tsc -p tsconfig.test.json",
+    "typecheck": "tsc -p tsconfig.test.json && tsc -p tsconfig.dom.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -33,6 +33,7 @@
     "@types/node": "^24.5.2",
     "@types/supertest": "^6.0.3",
     "eslint": "^9.36.0",
+    "happy-dom": "^20.14.6",
     "supertest": "^7.1.4",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.44.1",

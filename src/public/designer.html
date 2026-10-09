@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#111318" />
+    <!-- The organiser key is never put in a URL, and the URL holds nothing
+         from a draft but its id: don't leak it either. -->
+    <meta name="referrer" content="no-referrer" />
+    <title>Scavenger Hunt — Hunt designer</title>
+    <link rel="stylesheet" href="/play.css" />
+    <link rel="stylesheet" href="/moderator.css" />
+    <link rel="stylesheet" href="/designer.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="app-bar">
+        <span class="app-name">Scavenger Hunt · Designer</span>
+        <button id="sign-out" type="button" class="button-secondary sign-out" hidden>Forget key</button>
+      </div>
+      <div id="connection" class="message message--warning connection" role="status" hidden>
+        <span id="connection-text"></span>
+      </div>
+    </header>
+
+    <main class="designer">
+      <!-- The organiser key: typed once and kept for this tab only. -->
+      <section id="sign-in" class="panel" hidden>
+        <h1>Hunt designer</h1>
+        <p class="note intro">
+          Design a hunt for an area and a theme: the designer picks the places and writes the clues.
+        </p>
+        <!-- POST, so even without JavaScript the key never lands in a URL. -->
+        <form id="sign-in-form" method="post" action="/designer/sign-in" novalidate>
+          <label for="organiser-key" class="field-label">Organiser key</label>
+          <input
+            id="organiser-key"
+            name="key"
+            type="password"
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            required
+          />
+          <p class="note">Kept only in this tab, and forgotten when it closes.</p>
+          <p id="sign-in-error" class="message message--error" role="alert" hidden></p>
+          <button id="sign-in-button" type="submit">Continue</button>
+        </form>
+        <p class="note"><a href="/organiser-guide">Organiser guide</a></p>
+      </section>
+
+      <div id="workspace" hidden>
+        <!-- The open draft: /designer?draft=<id> -->
+        <section id="draft-panel" class="panel" aria-labelledby="draft-title" hidden>
+          <a id="draft-close" class="draft-close" href="/designer">‹ All drafts</a>
+          <h1 id="draft-title" class="draft-title">Draft</h1>
+          <p id="draft-theme" class="draft-theme"></p>
+          <p id="draft-request" class="note draft-request"></p>
+          <p id="draft-status" class="draft-status" role="status"></p>
+          <p id="draft-elapsed" class="draft-elapsed"></p>
+          <p id="draft-error" class="message message--error" role="alert" hidden></p>
+
+          <div id="draft-failed" class="draft-section" hidden>
+            <p id="failure-text" class="failure-text"></p>
+            <div id="problems-block" hidden>
+              <h2>Problems from its last attempt</h2>
+              <ul id="problems" class="problems"></ul>
+            </div>
+            <button id="try-again" type="button">Try again</button>
+          </div>
+
+          <div id="draft-ready" class="draft-section" hidden>
+            <h2>Checkpoints</h2>
+            <ol id="checkpoints" class="checkpoints"></ol>
+            <p class="note">Reviewing and publishing a draft aren't on this screen yet.</p>
+            <p id="attribution" class="note attribution"></p>
+          </div>
+
+          <div id="steps-block" class="draft-section">
+            <h2>Progress</h2>
+            <ol id="steps" class="steps"></ol>
+            <p id="steps-empty" class="note" hidden>Starting…</p>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="new-design-title">
+          <h2 id="new-design-title">New design</h2>
+          <!-- POST, so even without JavaScript nothing typed lands in a URL. -->
+          <form id="design-form" method="post" action="/designer" novalidate>
+            <label for="area" class="field-label">Area</label>
+            <input
+              id="area"
+              name="area"
+              type="text"
+              maxlength="200"
+              autocomplete="off"
+              placeholder="Chiswick, London"
+              aria-describedby="area-error"
+            />
+            <p id="area-error" class="field-error" hidden></p>
+
+            <label for="theme" class="field-label">Theme</label>
+            <input
+              id="theme"
+              name="theme"
+              type="text"
+              maxlength="200"
+              autocomplete="off"
+              placeholder="The Thames and brewing history"
+              aria-describedby="theme-error"
+            />
+            <p id="theme-error" class="field-error" hidden></p>
+
+            <div class="field-pair">
+              <div>
+                <label for="checkpoints-count" class="field-label">Checkpoints</label>
+                <input
+                  id="checkpoints-count"
+                  name="checkpoints"
+                  type="number"
+                  inputmode="numeric"
+                  min="3"
+                  max="8"
+                  step="1"
+                  value="3"
+                  aria-describedby="checkpoints-hint checkpoints-error"
+                />
+                <p id="checkpoints-hint" class="field-hint">3 to 8</p>
+                <p id="checkpoints-error" class="field-error" hidden></p>
+              </div>
+              <div>
+                <label for="max-walk-km" class="field-label">Longest walk (km)</label>
+                <input
+                  id="max-walk-km"
+                  name="max-walk-km"
+                  type="number"
+                  inputmode="decimal"
+                  min="0.5"
+                  max="10"
+                  step="0.5"
+                  value="3"
+                  aria-describedby="max-walk-hint max-walk-km-error"
+                />
+                <p id="max-walk-hint" class="field-hint">0.5 to 10, the whole loop</p>
+                <p id="max-walk-km-error" class="field-error" hidden></p>
+              </div>
+            </div>
+
+            <p id="design-note" class="note" hidden>
+              The same request as before. Change anything you like, then start the design.
+            </p>
+            <p id="design-error" class="message message--error" role="alert" hidden>
+              <span id="design-error-text"></span>
+              <a id="design-error-link" href="/designer" hidden>Follow it</a>
+            </p>
+            <button id="design-button" type="submit">Start design</button>
+            <p class="note">It takes a few minutes. You can follow it here, or close the page and come back.</p>
+          </form>
+        </section>
+
+        <section class="panel" aria-labelledby="drafts-title">
+          <h2 id="drafts-title">Drafts, newest first</h2>
+          <p id="drafts-error" class="message message--error" role="alert" hidden></p>
+          <ol id="drafts" class="drafts"></ol>
+          <p id="drafts-empty" class="note" hidden>No drafts yet.</p>
+        </section>
+
+        <p class="note guide-link"><a href="/organiser-guide">Organiser guide</a></p>
+      </div>
+    </main>
+
+    <script type="module" src="/designer.js"></script>
+  </body>
+</html>

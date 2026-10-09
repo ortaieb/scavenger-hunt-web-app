@@ -151,6 +151,69 @@ describe('the moderator code', () => {
   });
 });
 
+describe('GET /designer', () => {
+  it('serves the hunt designer', async () => {
+    const response = await request(createApp(testConfig)).get('/designer');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toMatch(/^text\/html/);
+    expect(response.text).toContain('<script type="module" src="/designer.js"></script>');
+  });
+
+  it('serves it with a draft id in the link too', async () => {
+    const response = await request(createApp(testConfig)).get(`/designer?draft=${VALID_SESSION}`);
+
+    expect(response.status).toBe(200);
+    expect(response.text).toContain('<script type="module" src="/designer.js"></script>');
+  });
+
+  it('asks for the key, and posts the design form, in forms that never put them in a URL', async () => {
+    const response = await request(createApp(testConfig)).get('/designer');
+
+    expect(response.text).toMatch(/<form id="sign-in-form" method="post"/);
+    expect(response.text).toMatch(/id="organiser-key"[\s\S]*?type="password"/);
+    expect(response.text).toMatch(/<form id="design-form" method="post"/);
+  });
+
+  it('has the form fields, with the contract limits and defaults', async () => {
+    const response = await request(createApp(testConfig)).get('/designer');
+
+    expect(response.text).toMatch(/id="area"[\s\S]*?maxlength="200"/);
+    expect(response.text).toMatch(/id="theme"[\s\S]*?maxlength="200"/);
+    expect(response.text).toMatch(/id="checkpoints-count"[\s\S]*?min="3"\s+max="8"[\s\S]*?value="3"/);
+    expect(response.text).toMatch(/id="max-walk-km"[\s\S]*?min="0.5"\s+max="10"[\s\S]*?value="3"/);
+  });
+});
+
+describe.each(['/designer.js', '/designer-logic.js', '/designer.css'])('GET %s', (asset) => {
+  it('is served', async () => {
+    const response = await request(createApp(testConfig)).get(asset);
+
+    expect(response.status).toBe(200);
+  });
+});
+
+describe('the organiser key', () => {
+  it.each(['/designer.js', '/designer-logic.js'])('is never kept in localStorage by %s', async (asset) => {
+    const response = await request(createApp(testConfig)).get(asset);
+
+    expect(response.text).not.toContain('localStorage');
+  });
+
+  it('is kept in sessionStorage and sent only as a Bearer token', async () => {
+    const response = await request(createApp(testConfig)).get('/designer.js');
+
+    expect(response.text).toContain('sessionStorage.setItem');
+    expect(response.text).toContain('authorization: `Bearer ${');
+  });
+
+  it.each(['/designer.js', '/designer-logic.js'])('is never logged by %s, nor anything from a draft', async (asset) => {
+    const response = await request(createApp(testConfig)).get(asset);
+
+    expect(response.text).not.toMatch(/console\./);
+  });
+});
+
 describe('GET /privacy', () => {
   it('renders the privacy notice as HTML, without the notes for whoever fills it in', async () => {
     const response = await request(createApp(testConfig)).get('/privacy');
