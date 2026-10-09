@@ -416,7 +416,7 @@ through unchanged.
 
 ### /designer
 
-The hunt designer (issues #59 and #60), for the organiser before any session
+The hunt designer (issues #59, #60 and #61), for the organiser before any session
 exists: `/designer`. Given an area and a theme, the game-server's
 hunt-designer agent picks checkpoints from map data and writes their clues,
 as a **draft**; this screen starts a design and follows it until the draft
@@ -476,6 +476,23 @@ session. The [organiser guide](docs/organiser-guide.md) is served at
   **Copy**, and a reminder to send each team only its own code. The codes
   are held in memory only: opening the draft again fetches them through
   `…/publication`. Below them, the hunt's checkpoints, read-only.
+- **The route map** (issue #61) is at the top of a ready or published
+  draft: [Leaflet](https://leafletjs.com/) over OpenStreetMap's standard
+  tiles, with the "© OpenStreetMap contributors" attribution. It outlines
+  the area's `bbox`, numbers a marker per checkpoint in route order, and
+  draws the closed loop in straight lines, as the game-server measures it.
+  A marker is styled by its review; a rejected one is faded and left out of
+  the loop, which is redrawn on each review. The view fits the box and the
+  markers once, when the draft is shown. Tapping a marker scrolls to its
+  card and highlights it; tapping a card's place name centres the map on
+  its marker. A published draft's map shows its accepted checkpoints only,
+  numbered as the session numbers them. If the tiles fail, or Leaflet
+  doesn't load, a note says the map couldn't load and the cards still work.
+  Leaflet is a runtime dependency served by this app at `/vendor/leaflet/`
+  (from its `node_modules`, which the Docker image copies), not from a CDN.
+  The tiles are requested with `referrerpolicy="strict-origin"`: the page
+  itself sends no referrer, and OpenStreetMap's tile servers want one, so
+  they get this app's origin but never the page's address.
 
 A draft's clues, scenes and coordinates are the answers to its hunt, and a
 publication's codes are credentials. Nothing from a draft, no code, and
@@ -489,8 +506,9 @@ own `designer.js` in [happy-dom](https://github.com/capricorn86/happy-dom),
 against a stub of the designer API: a design run to `ready`, busy and
 disabled, the key, failures, reviewing (the `PATCH` bodies, Save's changed
 fields, a `422 names_place` under the clue), the publish button's rule,
-publishing and reopening a published draft, and spies on `localStorage`
-and the console.
+publishing and reopening a published draft, the route map (drawn by the
+same Leaflet build the page loads: markers, loop, linking both ways, failed
+tiles and a missing Leaflet), and spies on `localStorage` and the console.
 
 ### Designer relays
 
