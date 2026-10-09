@@ -1411,6 +1411,24 @@ describe('designer relays', () => {
     'created-at': '2026-10-08T09:00:00Z',
   };
   const list = { drafts: [{ id: DRAFT, status: 'ready', area: 'Chiswick, London', theme: 'The Thames' }] };
+  const edit = { clue: 'Where old lamps once lit the way.', review: 'accepted' };
+  const edited = { ...draft.checkpoints[0], clue: edit.clue, review: 'accepted', edited: true };
+  const publishRequest = {
+    name: 'Chiswick river hunt',
+    'start-time': '2026-10-11T10:00:00+01:00',
+    'end-time': '2026-10-11T12:00:00+01:00',
+    teams: ['Red Foxes', 'Blue Herons'],
+  };
+  // Sentinels: the codes must never reach a log line.
+  const publication = {
+    session: '33333333-3333-4333-8333-333333333333',
+    name: 'Chiswick river hunt',
+    'moderator-code': 'MOD-NEVERLOGTHIS',
+    teams: [
+      { name: 'Red Foxes', 'join-code': 'FOX-NEVERLOG1' },
+      { name: 'Blue Herons', 'join-code': 'HERON-NEVERLOG2' },
+    ],
+  };
 
   // Each relay, with how to call it and what it relays to.
   const relays = [
@@ -1437,6 +1455,31 @@ describe('designer relays', () => {
       body: undefined,
       success: { status: 200, body: draft },
       send: (app: ReturnType<typeof createApp>) => request(app).get(`/designer/drafts/${DRAFT}`),
+    },
+    {
+      name: 'PATCH /designer/drafts/:draft/checkpoints/:position',
+      method: 'PATCH',
+      upstreamPath: `/designer/drafts/${DRAFT}/checkpoints/1`,
+      body: edit,
+      success: { status: 200, body: edited },
+      send: (app: ReturnType<typeof createApp>) => request(app).patch(`/designer/drafts/${DRAFT}/checkpoints/1`).send(edit),
+    },
+    {
+      name: 'POST /designer/drafts/:draft/publish',
+      method: 'POST',
+      upstreamPath: `/designer/drafts/${DRAFT}/publish`,
+      body: publishRequest,
+      success: { status: 201, body: publication },
+      send: (app: ReturnType<typeof createApp>) =>
+        request(app).post(`/designer/drafts/${DRAFT}/publish`).send(publishRequest),
+    },
+    {
+      name: 'GET /designer/drafts/:draft/publication',
+      method: 'GET',
+      upstreamPath: `/designer/drafts/${DRAFT}/publication`,
+      body: undefined,
+      success: { status: 200, body: publication },
+      send: (app: ReturnType<typeof createApp>) => request(app).get(`/designer/drafts/${DRAFT}/publication`),
     },
   ] as const;
 
@@ -1568,6 +1611,192 @@ describe('designer relays', () => {
     });
   });
 
+  describe('PATCH /designer/drafts/:draft/checkpoints/:position', () => {
+    it.each([
+      ['an accept', { review: 'accepted' }],
+      ['a reject', { review: 'rejected' }],
+      ['an undo', { review: 'pending' }],
+      ['a text edit', { clue: 'A new clue', proximity: 40 }],
+      ['an odd body', { colour: 'red', review: null }],
+    ])('sends %s upstream as sent: the game-server alone decides whether it is valid', async (_label, body) => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(200, edited)));
+
+      await request(createApp(testConfig, { fetch: fetchMock }))
+        .patch(`/designer/drafts/${DRAFT}/checkpoints/3`)
+        .set('Authorization', ORGANISER_AUTH)
+        .send(body);
+
+      const [calledUrl, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect((calledUrl as URL).pathname).toBe(`/designer/drafts/${DRAFT}/checkpoints/3`);
+      expect(JSON.parse(init?.body as string)).toEqual(body);
+    });
+
+    it.each([
+      [
+        422,
+        {
+          detail: 'draft problems',
+          problems: [
+            {
+              code: 'names_place',
+              position: 1,
+              message: 'Checkpoint 1\'s clue gives the place away ("Lantern"); describe it without its name',
+            },
+          ],
+        },
+      ],
+      [409, { detail: "draft can't be edited", code: 'draft_not_editable' }],
+      [404, { detail: 'unknown checkpoint' }],
+    ])('passes a %s with its body through unchanged', async (status, body) => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(status, body)));
+
+      const response = await relays[3].send(createApp(testConfig, { fetch: fetchMock })).set('Authorization', ORGANISER_AUTH);
+
+      expect(response.status).toBe(status);
+      expect(response.body).toEqual(body);
+    });
+
+    it.each(['1', '8'])('accepts position %s', async (position) => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(200, edited)));
+
+      const response = await request(createApp(testConfig, { fetch: fetchMock }))
+        .patch(`/designer/drafts/${DRAFT}/checkpoints/${position}`)
+        .set('Authorization', ORGANISER_AUTH)
+        .send({ review: 'accepted' });
+
+      expect(response.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['0', '0'],
+      ['9', '9'],
+      ['negative', '-1'],
+      ['not a whole number', '1.5'],
+      ['not a number', 'one'],
+      ['a path', '1%2F..%2F..%2Fpublish'],
+    ])('rejects a position that is %s with 400, and sends nothing upstream', async (_label, position) => {
+      const fetchMock: typeof fetch = vi.fn();
+
+      const response = await request(createApp(testConfig, { fetch: fetchMock }))
+        .patch(`/designer/drafts/${DRAFT}/checkpoints/${position}`)
+        .set('Authorization', ORGANISER_AUTH)
+        .send({ review: 'accepted' });
+
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({ error: 'position must be an integer from 1 to 8' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('sends an empty object upstream for a request with no body', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(422, { detail: [] })));
+
+      await request(createApp(testConfig, { fetch: fetchMock }))
+        .patch(`/designer/drafts/${DRAFT}/checkpoints/1`)
+        .set('Authorization', ORGANISER_AUTH);
+
+      const [, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect(JSON.parse(init?.body as string)).toEqual({});
+    });
+  });
+
+  describe('POST /designer/drafts/:draft/publish', () => {
+    it.each([
+      [409, { detail: 'checkpoint(s) 2 still pending review', code: 'draft_not_ready' }],
+      [
+        422,
+        { detail: 'draft problems', problems: [{ code: 'too_close', position: 2, message: 'Checkpoints 2 and 4 are 90 m apart' }] },
+      ],
+      [422, { detail: [{ type: 'value_error', loc: ['body'], msg: 'Value error, end-time must be after start-time' }] }],
+      [404, { detail: 'unknown draft' }],
+    ])('passes a %s with its body through unchanged', async (status, body) => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(status, body)));
+
+      const response = await relays[4].send(createApp(testConfig, { fetch: fetchMock })).set('Authorization', ORGANISER_AUTH);
+
+      expect(response.status).toBe(status);
+      expect(response.body).toEqual(body);
+    });
+
+    it('sends the request upstream as sent: the game-server alone decides whether it is valid', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(422, { detail: [] })));
+      const odd = { name: '', teams: [], colour: 'red' };
+
+      await request(createApp(testConfig, { fetch: fetchMock }))
+        .post(`/designer/drafts/${DRAFT}/publish`)
+        .set('Authorization', ORGANISER_AUTH)
+        .send(odd);
+
+      const [, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect(JSON.parse(init?.body as string)).toEqual(odd);
+    });
+  });
+
+  describe('GET /designer/drafts/:draft/publication', () => {
+    it.each([{ detail: 'not published' }, { detail: 'unknown draft' }])('passes a 404 %j through unchanged', async (body) => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(404, body)));
+
+      const response = await relays[5].send(createApp(testConfig, { fetch: fetchMock })).set('Authorization', ORGANISER_AUTH);
+
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual(body);
+    });
+  });
+
+  describe.each([
+    ['PATCH', (draftId: string) => `/designer/drafts/${draftId}/checkpoints/1`],
+    ['POST', (draftId: string) => `/designer/drafts/${draftId}/publish`],
+    ['GET', (draftId: string) => `/designer/drafts/${draftId}/publication`],
+  ] as const)('%s on a draft', (method, url) => {
+    it.each([
+      ['not a UUID', 'not-a-uuid'],
+      ['a UUID with more after it', `${DRAFT}x`],
+      ['a path out of the drafts', '..%2F..%2Fhealth'],
+    ])('rejects a draft id that is %s with 400, and sends nothing upstream', async (_label, draftId) => {
+      const fetchMock: typeof fetch = vi.fn();
+      const app = createApp(testConfig, { fetch: fetchMock });
+      const call = request(app)[method === 'PATCH' ? 'patch' : method === 'POST' ? 'post' : 'get'](url(draftId));
+
+      const response = await call.set('Authorization', ORGANISER_AUTH);
+
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({ error: 'draft must be a valid UUID' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('never logs a join code or the moderator code from a publication, whatever the route', async () => {
+    const logged = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => undefined),
+    );
+    try {
+      for (const status of [201, 200]) {
+        const app = createApp(testConfig, { fetch: vi.fn(() => Promise.resolve(jsonResponse(status, publication))) });
+        const published = await request(app)
+          .post(`/designer/drafts/${DRAFT}/publish`)
+          .set('Authorization', ORGANISER_AUTH)
+          .send(publishRequest);
+        const again = await request(app).get(`/designer/drafts/${DRAFT}/publication`).set('Authorization', ORGANISER_AUTH);
+        // The codes do reach the organiser...
+        expect(published.body).toEqual(publication);
+        expect(again.body).toEqual(publication);
+      }
+
+      // ...and nothing else.
+      const lines = logged.flatMap((spy) => spy.mock.calls.map((args) => args.map(String).join(' ')));
+      for (const code of ['MOD-NEVERLOGTHIS', 'FOX-NEVERLOG1', 'HERON-NEVERLOG2']) {
+        expect(lines.filter((line) => line.includes(code))).toEqual([]);
+      }
+      for (const spy of logged) {
+        expect(spy).not.toHaveBeenCalled();
+      }
+    } finally {
+      for (const spy of logged) {
+        spy.mockRestore();
+      }
+    }
+  });
+
   it('never logs the organiser key or anything from a draft, whatever the outcome', async () => {
     const secret = 'Bearer never-log-this-organiser-key';
     const logged = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
@@ -1579,6 +1808,8 @@ describe('designer relays', () => {
         () => Promise.resolve(jsonResponse(202, { id: DRAFT, status: 'running' })),
         () => Promise.resolve(jsonResponse(401, { detail: 'organiser key required', code: 'organiser_unauthorised' })),
         () => Promise.resolve(jsonResponse(409, { detail: 'a design is already running', code: 'designer_busy' })),
+        () => Promise.resolve(jsonResponse(201, publication)),
+        () => Promise.resolve(jsonResponse(422, { detail: 'draft problems', problems: [] })),
         () => Promise.reject(new Error('connect ECONNREFUSED')),
       ]) {
         const app = createApp(testConfig, { fetch: vi.fn(upstream) });
@@ -1586,6 +1817,10 @@ describe('designer relays', () => {
         await request(app).get('/designer/drafts').set('Authorization', secret);
         await request(app).get(`/designer/drafts/${DRAFT}`).set('Authorization', secret);
         await request(app).get('/designer/drafts/not-a-uuid').set('Authorization', secret);
+        await request(app).patch(`/designer/drafts/${DRAFT}/checkpoints/1`).set('Authorization', secret).send(edit);
+        await request(app).patch(`/designer/drafts/${DRAFT}/checkpoints/9`).set('Authorization', secret).send(edit);
+        await request(app).post(`/designer/drafts/${DRAFT}/publish`).set('Authorization', secret).send(publishRequest);
+        await request(app).get(`/designer/drafts/${DRAFT}/publication`).set('Authorization', secret);
       }
 
       for (const spy of logged) {
