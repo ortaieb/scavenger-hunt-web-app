@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { createApp, fetchWithTimeout } from '../src/app.js';
+import { FAILURE_TEXT, STEP_LABELS } from '../src/public/designer-logic.js';
 
 const testConfig = { gameServerUrl: 'http://game-server.test', gameServerTimeoutMs: 5000 };
 
@@ -248,6 +249,27 @@ describe('GET /moderator-guide', () => {
 
     expect(response.status).toBe(200);
     expect(response.text).toContain('<h1>Moderator guide</h1>');
+  });
+});
+
+describe('GET /organiser-guide', () => {
+  it('renders the organiser guide as HTML, with a way back to the designer', async () => {
+    const response = await request(createApp(testConfig)).get('/organiser-guide');
+
+    expect(response.status).toBe(200);
+    expect(response.text).toContain('<h1>Organiser guide</h1>');
+    expect(response.text).toContain('<a class="doc-back" href="/designer">‹ Back to the designer</a>');
+  });
+
+  it('explains every progress step and every failure the designer screen shows', async () => {
+    const response = await request(createApp(testConfig)).get('/organiser-guide');
+
+    for (const label of Object.values(STEP_LABELS)) {
+      expect(response.text).toContain(label);
+    }
+    for (const text of Object.values(FAILURE_TEXT)) {
+      expect(response.text).toContain(text.replaceAll("'", '&#39;'));
+    }
   });
 });
 

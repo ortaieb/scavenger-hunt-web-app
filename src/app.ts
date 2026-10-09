@@ -65,7 +65,11 @@ function escapeHtml(text: string): string {
  * like /play. HTML comments (notes to whoever fills in the doc) are
  * dropped. Read and rendered once, on first request.
  */
-function markdownPage(file: string, title: string): () => Promise<string> {
+function markdownPage(
+  file: string,
+  title: string,
+  back: { href: string; text: string } = { href: '/play', text: 'Back to the game' },
+): () => Promise<string> {
   let page: Promise<string> | undefined;
   return () => {
     page ??= readFile(path.join(docsDir, file), 'utf8')
@@ -83,7 +87,7 @@ function markdownPage(file: string, title: string): () => Promise<string> {
   </head>
   <body>
     <main class="doc">
-      <a class="doc-back" href="/play">‹ Back to the game</a>
+      <a class="doc-back" href="${escapeHtml(back.href)}">‹ ${escapeHtml(back.text)}</a>
 ${body}
     </main>
   </body>
@@ -105,6 +109,7 @@ const DOC_ROUTES: Record<string, string> = {
   'privacy-notice.md': '/privacy',
   'user-guide.md': '/how-to-play',
   'moderator-guide.md': '/moderator-guide',
+  'organiser-guide.md': '/organiser-guide',
 };
 
 function rewriteDocLinks(html: string): string {
@@ -185,6 +190,14 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   const moderatorGuidePage = markdownPage('moderator-guide.md', 'Moderator guide');
   app.get('/moderator-guide', async (_req: Request, res: ExpressResponse) => {
     res.type('html').send(await moderatorGuidePage());
+  });
+
+  const organiserGuidePage = markdownPage('organiser-guide.md', 'Organiser guide', {
+    href: '/designer',
+    text: 'Back to the designer',
+  });
+  app.get('/organiser-guide', async (_req: Request, res: ExpressResponse) => {
+    res.type('html').send(await organiserGuidePage());
   });
 
   // The guides' screenshots, linked as `images/…` so they also show on
