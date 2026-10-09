@@ -662,7 +662,7 @@ describe('a failed draft', () => {
     expect(text('draft-status')).toBe('Failed');
     expect(text('failure-text')).toBe('The designer ran out of steps.');
     expect(items('problems')).toEqual(['Checkpoint 2: Checkpoints 2 and 3 are 90 m apart']);
-    expect(text('draft-elapsed')).toBe('Took 2:05 · cost $0.61');
+    expect(text('draft-elapsed')).toBe('Took 2:05 · 30 turns · cost $0.61');
     expect(items('steps')).toEqual(['0:05 Checking the draft: 1 problem: too_close']);
 
     await vi.advanceTimersByTimeAsync(10_000);
