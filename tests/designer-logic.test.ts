@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   acceptedLoopM,
+  areaBox,
   changedFields,
   charCount,
   CHECKPOINT_LIMITS,
@@ -23,7 +24,11 @@ import {
   kindWords,
   LIMITS,
   localToIso,
+  loopLatLngs,
   loopM,
+  mapBounds,
+  MARKER_STYLES,
+  markerStyle,
   MIN_ACCEPTED,
   newestFirst,
   osmUrl,
@@ -43,6 +48,7 @@ import {
   reviewCounts,
   reviewOf,
   reviewSummary,
+  routeMap,
   runLine,
   runningDraftId,
   statusLabel,
@@ -704,6 +710,177 @@ describe('the summary bar', () => {
     expect(reviewSummary({ ...draft, checkpoints: [placed(1, 0, 'pending')] })).toMatchObject({
       loop: 'Accept checkpoints to see the loop',
     });
+  });
+});
+
+describe('the route map', () => {
+  const box = { south: 51.48, west: -0.27, north: 51.5, east: -0.24 };
+  const placed = (position: number, name: string, lat: number, long: number, review: string) => ({
+    ...checkpoint(position, name),
+    place: { ...checkpoint(position, name).place, location: { lat, long } },
+    review,
+  });
+  const reviewed = {
+    ...ready,
+    area: { name: 'Chiswick, London, England', bbox: box, clipped: false },
+    checkpoints: [
+      placed(3, "Brewers' Arch", 51.495, -0.25, 'pending'),
+      placed(1, 'Lantern Gate', 51.49, -0.26, 'accepted'),
+      placed(2, 'Riverside Bench', 51.485, -0.255, 'rejected'),
+    ],
+  };
+
+  it('gives each review its words and style, and leaves only the rejected out of the loop', () => {
+    expect(markerStyle('pending')).toEqual({ words: 'To review', className: 'route-marker route-marker--pending', inLoop: true });
+    expect(markerStyle('accepted')).toEqual({
+      words: 'Accepted',
+      className: 'route-marker route-marker--accepted',
+      inLoop: true,
+    });
+    expect(markerStyle('rejected')).toEqual({
+      words: 'Rejected',
+      className: 'route-marker route-marker--rejected',
+      inLoop: false,
+    });
+    // Anything else is still to review.
+    expect(markerStyle(undefined)).toBe(MARKER_STYLES.pending);
+    expect(markerStyle('maybe')).toBe(MARKER_STYLES.pending);
+  });
+
+  it("reads the area's box, when it's a usable one", () => {
+    expect(areaBox(reviewed)).toEqual(box);
+    expect(areaBox({ ...reviewed, area: { name: 'x', clipped: false } })).toBeNull();
+    expect(areaBox({ ...reviewed, area: null })).toBeNull();
+    expect(areaBox({ ...reviewed, area: { name: 'x', bbox: { ...box, north: Number.NaN } } })).toBeNull();
+    expect(areaBox({ ...reviewed, area: { name: 'x', bbox: { ...box, south: 51.6 } } })).toBeNull();
+    expect(areaBox({ ...reviewed, area: { name: 'x', bbox: { ...box, west: -0.2 } } })).toBeNull();
+    expect(areaBox(undefined)).toBeNull();
+  });
+
+  it('fits the view to the box and every place, even one outside it', () => {
+    expect(mapBounds(box, [{ lat: 51.49, long: -0.26 }])).toEqual([
+      [51.48, -0.27],
+      [51.5, -0.24],
+    ]);
+    // A place just over the edge, within the server's margin.
+    expect(mapBounds(box, [{ lat: 51.5005, long: -0.2705 }])).toEqual([
+      [51.48, -0.2705],
+      [51.5005, -0.24],
+    ]);
+    expect(
+      mapBounds(null, [
+        { lat: 51.49, long: -0.26 },
+        { lat: 51.495, long: -0.25 },
+      ]),
+    ).toEqual([
+      [51.49, -0.26],
+      [51.495, -0.25],
+    ]);
+    expect(mapBounds(box, [])).toEqual([
+      [51.48, -0.27],
+      [51.5, -0.24],
+    ]);
+    expect(mapBounds(null, [{ lat: Number.NaN, long: 0 }])).toBeNull();
+    expect(mapBounds(null, [])).toBeNull();
+  });
+
+  it('closes the loop back to the first place, leaving out the rejected', () => {
+    const at = (lat: number, long: number, review: string) => ({ lat, long, review });
+
+    expect(loopLatLngs([at(1, 1, 'accepted'), at(2, 2, 'rejected'), at(3, 3, 'pending'), at(4, 4, 'accepted')])).toEqual([
+      [1, 1],
+      [3, 3],
+      [4, 4],
+      [1, 1],
+    ]);
+    // Two places make a there-and-back, as the server measures it.
+    expect(loopLatLngs([at(1, 1, 'pending'), at(2, 2, 'accepted')])).toEqual([
+      [1, 1],
+      [2, 2],
+      [1, 1],
+    ]);
+    expect(loopLatLngs([at(1, 1, 'accepted'), at(2, 2, 'rejected')])).toEqual([]);
+    expect(loopLatLngs([])).toEqual([]);
+  });
+
+  it("draws a ready draft's box, its checkpoints in route order styled by review, and the loop without the rejected", () => {
+    expect(routeMap(reviewed)).toEqual({
+      box,
+      markers: [
+        {
+          position: 1,
+          name: 'Lantern Gate',
+          review: 'accepted',
+          title: '1. Lantern Gate: Accepted',
+          className: 'route-marker route-marker--accepted',
+          lat: 51.49,
+          long: -0.26,
+        },
+        {
+          position: 2,
+          name: 'Riverside Bench',
+          review: 'rejected',
+          title: '2. Riverside Bench: Rejected',
+          className: 'route-marker route-marker--rejected',
+          lat: 51.485,
+          long: -0.255,
+        },
+        {
+          position: 3,
+          name: "Brewers' Arch",
+          review: 'pending',
+          title: "3. Brewers' Arch: To review",
+          className: 'route-marker route-marker--pending',
+          lat: 51.495,
+          long: -0.25,
+        },
+      ],
+      loop: [
+        [51.49, -0.26],
+        [51.495, -0.25],
+        [51.49, -0.26],
+      ],
+      bounds: [
+        [51.48, -0.27],
+        [51.5, -0.24],
+      ],
+    });
+  });
+
+  it('leaves out a checkpoint with no place to draw', () => {
+    const view = routeMap({
+      ...reviewed,
+      checkpoints: [...reviewed.checkpoints, { ...checkpoint(4, 'Nowhere'), place: { osm: 'node/4', name: 'Nowhere' } }],
+    });
+
+    expect(view?.markers.map((marker) => marker.position)).toEqual([1, 2, 3]);
+  });
+
+  it("draws a published draft's accepted checkpoints only, numbered 1… as the session numbers them", () => {
+    const published = {
+      ...reviewed,
+      status: 'published',
+      checkpoints: [
+        placed(1, 'Lantern Gate', 51.49, -0.26, 'accepted'),
+        placed(2, 'Riverside Bench', 51.485, -0.255, 'rejected'),
+        placed(3, "Brewers' Arch", 51.495, -0.25, 'accepted'),
+        placed(4, 'Old Mill', 51.497, -0.245, 'accepted'),
+      ],
+    };
+    const view = routeMap(published);
+
+    expect(view?.markers.map(({ position, title, review }) => ({ position, title, review }))).toEqual([
+      { position: 1, title: '1. Lantern Gate', review: 'accepted' },
+      { position: 2, title: "2. Brewers' Arch", review: 'accepted' },
+      { position: 3, title: '3. Old Mill', review: 'accepted' },
+    ]);
+    expect(view?.loop).toHaveLength(4);
+  });
+
+  it('draws nothing for a draft that is running or failed', () => {
+    expect(routeMap(running)).toBeNull();
+    expect(routeMap(failed('deadline'))).toBeNull();
+    expect(routeMap(undefined)).toBeNull();
   });
 });
 

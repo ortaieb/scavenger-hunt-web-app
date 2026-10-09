@@ -89,6 +89,16 @@ The designer's work is for you to approve. A ready draft shows, at the top,
 the area it found, the loop's length, and how long the run took, its turns
 and what it cost. Below that is one card per checkpoint, in walking order.
 
+**Reading the map**: above the cards, the dashed box is the area, each
+checkpoint is a numbered marker in walking order, and the line is the loop,
+straight from place to place as the designer measures it. Use it to judge
+the choices: are the places spread out, is the loop walkable, does one sit
+across a main road? A marker is yellow to review and green once accepted; a
+rejected one is faded and left out of the loop. Tap a marker to go to its
+card, or a checkpoint's name to find it on the map. If the map can't load,
+the page says so, and the cards still work. Once the hunt is published, the
+map shows only its checkpoints, numbered as they are in the hunt.
+
 ![A checkpoint card, edited and accepted, with the summary bar](images/designer-review.png)
 
 Each card has:
@@ -175,7 +185,8 @@ data © OpenStreetMap contributors.
 A draft's clues, places, poses and scenes are the answers to the hunt, and
 the join and moderator codes let anyone into it. The page shows them only to
 you, with your key. The browser doesn't keep them, and the page's address
-holds only the draft's id. Don't show the screen to players.
+holds only the draft's id. The map shows where every checkpoint is: don't
+show the screen to players.
 
 If the page says *That organiser key isn't right*, the key was mistyped or
 has changed on the game-server: enter it again. *No connection to the game

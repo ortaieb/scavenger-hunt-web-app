@@ -194,11 +194,37 @@ describe('GET /designer', () => {
   });
 });
 
-describe.each(['/designer.js', '/designer-logic.js', '/designer.css'])('GET %s', (asset) => {
+describe.each(['/designer.js', '/designer-logic.js', '/designer-map.js', '/designer.css'])('GET %s', (asset) => {
   it('is served', async () => {
     const response = await request(createApp(testConfig)).get(asset);
 
     expect(response.status).toBe(200);
+  });
+});
+
+describe('Leaflet, for the designer\'s map', () => {
+  it.each([
+    ['/vendor/leaflet/leaflet.js', /javascript/, 'a JS library for interactive maps'],
+    ['/vendor/leaflet/leaflet.css', /^text\/css/, '.leaflet-container'],
+  ])("serves %s from this app's own copy", async (asset, type, content) => {
+    const response = await request(createApp(testConfig)).get(asset);
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toMatch(type);
+    expect(response.text).toContain(content);
+  });
+
+  it('is loaded by the designer from /vendor/leaflet/, before its own script, and no script comes from anywhere else', async () => {
+    const response = await request(createApp(testConfig)).get('/designer');
+
+    expect(response.text).toContain('<link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />');
+    expect(response.text).toContain('<script defer src="/vendor/leaflet/leaflet.js"></script>');
+    expect(response.text.indexOf('/vendor/leaflet/leaflet.js')).toBeLessThan(response.text.indexOf('/designer.js'));
+    const sources = [...response.text.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^"]*)"/g)].map((match) => match[1]);
+    expect(sources.length).toBeGreaterThan(0);
+    for (const source of sources) {
+      expect(source).toMatch(/^\/(?!\/)/);
+    }
   });
 });
 
