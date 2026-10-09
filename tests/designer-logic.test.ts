@@ -4,7 +4,6 @@ import {
   changedFields,
   charCount,
   CHECKPOINT_LIMITS,
-  checkpointRows,
   costWords,
   counter,
   designerError,
@@ -410,21 +409,6 @@ describe('a failed draft', () => {
     expect(problemLines({ ...running, problems: [{ code: 'wrong_count', position: null, message: '' }] })).toEqual([
       'wrong_count',
     ]);
-  });
-});
-
-describe('a ready draft', () => {
-  it('lists its checkpoints in route order: name, clue and pose', () => {
-    expect(checkpointRows(ready)).toEqual([
-      { position: 1, name: 'Lantern Gate', clue: 'Clue 1', pose: 'Pose 1' },
-      { position: 2, name: 'Riverside Bench', clue: 'Clue 2', pose: 'Pose 2' },
-      { position: 3, name: "Brewers' Arch", clue: 'Clue 3', pose: 'Pose 3' },
-    ]);
-  });
-
-  it('is empty without checkpoints', () => {
-    expect(checkpointRows(running)).toEqual([]);
-    expect(checkpointRows(undefined)).toEqual([]);
   });
 });
 

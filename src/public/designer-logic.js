@@ -482,19 +482,9 @@ function inRouteOrder(draft) {
 }
 
 /**
- * A draft's checkpoints, in route order, read-only: the place's name, the
- * clue and the pose.
- *
- * @param {Draft | null | undefined} draft
- * @returns {{ position: number, name: string, clue: string, pose: string }[]}
- */
-export function checkpointRows(draft) {
-  return inRouteOrder(draft).map(rowOf);
-}
-
-/**
- * A published draft's hunt: its accepted checkpoints, numbered 1…n in route
- * order as the session numbers them.
+ * A published draft's hunt, read-only: its accepted checkpoints, numbered
+ * 1…n in route order as the session numbers them, with the place's name,
+ * the clue and the pose.
  *
  * @param {Draft | null | undefined} draft
  * @returns {{ position: number, name: string, clue: string, pose: string }[]}
