@@ -883,20 +883,19 @@ export function distanceWords(metres) {
 
 /**
  * The summary bar: the review counts, and the loop over the accepted
- * checkpoints against the longest walk asked for.
+ * checkpoints against the longest walk asked for. A ready draft's whole
+ * loop is within that walk, and leaving checkpoints out only shortens it.
  *
  * @param {Draft | null | undefined} draft
- * @returns {{ accepted: number, rejected: number, pending: number, loop: string, over: boolean }}
+ * @returns {{ accepted: number, rejected: number, pending: number, loop: string }}
  */
 export function reviewSummary(draft) {
-  const counts = reviewCounts(draft?.checkpoints);
   const loop = acceptedLoopM(draft);
   const maxWalkKm = draft?.request?.['max-walk-km'];
   const limit = typeof maxWalkKm === 'number' ? ` (up to ${maxWalkKm} km)` : '';
   return {
-    ...counts,
+    ...reviewCounts(draft?.checkpoints),
     loop: loop === null ? 'Accept checkpoints to see the loop' : `Loop of the accepted: ${distanceWords(loop)}${limit}`,
-    over: loop !== null && typeof maxWalkKm === 'number' && loop > maxWalkKm * 1000,
   };
 }
 

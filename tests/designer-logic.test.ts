@@ -704,7 +704,7 @@ describe('the summary bar', () => {
     expect(distanceWords(1410)).toBe('1.41 km');
   });
 
-  it('says how long the loop of the accepted is, and when it is longer than the walk asked for', () => {
+  it('says how long the loop of the accepted is, against the walk asked for', () => {
     const draft = {
       ...ready,
       request: { ...request, 'max-walk-km': 3 },
@@ -716,12 +716,9 @@ describe('the summary bar', () => {
       rejected: 1,
       pending: 0,
       loop: 'Loop of the accepted: 2.22 km (up to 3 km)',
-      over: false,
     });
-    expect(reviewSummary({ ...draft, request: { ...request, 'max-walk-km': 2 } })).toMatchObject({ over: true });
     expect(reviewSummary({ ...draft, checkpoints: [placed(1, 0, 'pending')] })).toMatchObject({
       loop: 'Accept checkpoints to see the loop',
-      over: false,
     });
   });
 });

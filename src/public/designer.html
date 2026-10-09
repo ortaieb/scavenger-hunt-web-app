@@ -59,6 +59,7 @@
           <p id="draft-request" class="note draft-request"></p>
           <p id="draft-status" class="draft-status" role="status"></p>
           <p id="draft-elapsed" class="draft-elapsed"></p>
+          <p id="draft-facts" class="note draft-facts"></p>
           <p id="draft-error" class="message message--error" role="alert" hidden></p>
 
           <div id="draft-failed" class="draft-section" hidden>
@@ -71,9 +72,107 @@
           </div>
 
           <div id="draft-ready" class="draft-section" hidden>
-            <h2>Checkpoints</h2>
-            <ol id="checkpoints" class="checkpoints"></ol>
-            <p class="note">Reviewing and publishing a draft aren't on this screen yet.</p>
+            <!-- A ready draft: review each checkpoint, then publish it. -->
+            <div id="draft-review" hidden>
+              <h2>Review the checkpoints</h2>
+              <p class="note review-intro">
+                Read each checkpoint the designer chose, fix what's wrong, then accept or reject it. Only the
+                accepted ones go into the hunt.
+              </p>
+              <ol id="cards" class="cards"></ol>
+
+              <div id="review-summary" class="review-summary" role="status">
+                <span class="review-counts">
+                  <span id="count-accepted"></span>
+                  <span id="count-rejected"></span>
+                  <span id="count-pending"></span>
+                </span>
+                <span id="review-loop" class="review-loop"></span>
+              </div>
+
+              <section class="publish" aria-labelledby="publish-title">
+                <h2 id="publish-title">Publish the hunt</h2>
+                <!-- POST, so even without JavaScript nothing typed lands in a URL. -->
+                <form id="publish-form" method="post" action="/designer" novalidate>
+                  <label for="hunt-name" class="field-label">Hunt name</label>
+                  <input
+                    id="hunt-name"
+                    name="name"
+                    type="text"
+                    maxlength="100"
+                    autocomplete="off"
+                    placeholder="Chiswick river hunt"
+                    aria-describedby="hunt-name-error"
+                  />
+                  <p id="hunt-name-error" class="field-error" hidden></p>
+
+                  <div class="field-pair">
+                    <div>
+                      <label for="start-time" class="field-label">Planned start</label>
+                      <input id="start-time" name="start-time" type="datetime-local" aria-describedby="start-time-error" />
+                      <p id="start-time-error" class="field-error" hidden></p>
+                    </div>
+                    <div>
+                      <label for="end-time" class="field-label">Planned end</label>
+                      <input id="end-time" name="end-time" type="datetime-local" aria-describedby="end-time-error" />
+                      <p id="end-time-error" class="field-error" hidden></p>
+                    </div>
+                  </div>
+                  <p class="field-hint">In your own time. The moderator still starts and finishes the session.</p>
+
+                  <fieldset class="teams-field">
+                    <legend class="field-label">Teams</legend>
+                    <ol id="teams" class="teams"></ol>
+                    <p id="teams-error" class="field-error" hidden></p>
+                    <button id="add-team" type="button" class="button-secondary">Add a team</button>
+                    <p class="field-hint">1 to 10 teams, each with its own name.</p>
+                  </fieldset>
+
+                  <p id="publish-reason" class="action-reason" hidden></p>
+                  <div id="publish-error" class="message message--error" role="alert" hidden>
+                    <span id="publish-error-text"></span>
+                    <ul id="publish-error-lines" class="problems"></ul>
+                  </div>
+                  <button id="publish-button" type="submit">Publish hunt</button>
+                </form>
+              </section>
+            </div>
+
+            <!-- A published draft: its codes, fetched again each time it's
+                 opened and never kept, and the hunt it became. -->
+            <div id="draft-published" hidden>
+              <div id="publication" class="publication" hidden>
+                <h2>Published</h2>
+                <p class="note">The hunt is playable now. The moderator starts it when the teams are ready.</p>
+                <dl class="publication-details">
+                  <dt>Session</dt>
+                  <dd><code id="publication-session" class="code-text"></code></dd>
+                  <dt>Moderator link</dt>
+                  <dd class="copy-row">
+                    <a id="moderator-link" href="/moderator" target="_blank" rel="noopener"></a>
+                    <button id="copy-moderator-link" type="button" class="button-secondary copy-button">Copy</button>
+                  </dd>
+                  <dt>Moderator code</dt>
+                  <dd class="copy-row">
+                    <code id="moderator-code" class="code-text"></code>
+                    <button id="copy-moderator-code" type="button" class="button-secondary copy-button">Copy</button>
+                  </dd>
+                </dl>
+                <h3>Teams and their join codes</h3>
+                <ul id="team-codes" class="team-codes"></ul>
+                <p class="message message--note">
+                  Send each team only its own code: anyone with a code can join as that team. Keep the moderator
+                  code for the moderator.
+                </p>
+                <p class="note">These codes aren't kept on this page. Open this draft again to see them.</p>
+                <p id="copy-status" class="visually-hidden" role="status"></p>
+              </div>
+              <p id="publication-error" class="message message--error" role="alert" hidden></p>
+              <button id="publication-retry" type="button" class="button-secondary" hidden>Show the codes</button>
+              <h2>Checkpoints in the hunt</h2>
+              <ol id="checkpoints" class="checkpoints"></ol>
+            </div>
+
             <p id="attribution" class="note attribution"></p>
           </div>
 
@@ -169,6 +268,15 @@
         <p class="note guide-link"><a href="/organiser-guide">Organiser guide</a></p>
       </div>
     </main>
+
+    <dialog id="publish-confirm" class="sheet" aria-labelledby="publish-confirm-title">
+      <h2 id="publish-confirm-title">Publish this hunt?</h2>
+      <p>Publishing makes this hunt playable at once. You can't edit it afterwards.</p>
+      <div class="confirm-actions">
+        <button id="publish-cancel" type="button" class="button-secondary">Cancel</button>
+        <button id="publish-ok" type="button">Publish</button>
+      </div>
+    </dialog>
 
     <script type="module" src="/designer.js"></script>
   </body>

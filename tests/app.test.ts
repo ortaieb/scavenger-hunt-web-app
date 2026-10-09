@@ -174,6 +174,14 @@ describe('GET /designer', () => {
     expect(response.text).toMatch(/<form id="sign-in-form" method="post"/);
     expect(response.text).toMatch(/id="organiser-key"[\s\S]*?type="password"/);
     expect(response.text).toMatch(/<form id="design-form" method="post"/);
+    expect(response.text).toMatch(/<form id="publish-form" method="post"/);
+  });
+
+  it('asks before publishing, in a dialog that says what publishing does', async () => {
+    const response = await request(createApp(testConfig)).get('/designer');
+
+    expect(response.text).toContain('<dialog id="publish-confirm"');
+    expect(response.text).toContain("Publishing makes this hunt playable at once. You can't edit it afterwards.");
   });
 
   it('has the form fields, with the contract limits and defaults', async () => {
