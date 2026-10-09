@@ -282,7 +282,7 @@ describe('GET /organiser-guide', () => {
 });
 
 describe('the guides', () => {
-  it.each(['/how-to-play', '/moderator-guide'])('serves every screenshot %s shows', async (page) => {
+  it.each(['/how-to-play', '/moderator-guide', '/organiser-guide'])('serves every screenshot %s shows', async (page) => {
     const app = createApp(testConfig);
     const html = (await request(app).get(page)).text;
     const images = [...html.matchAll(/<img src="([^"]+)"/g)].map((match) => match[1]!);
