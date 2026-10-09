@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -18,6 +19,10 @@ const publicDir = path.join(__dirname, 'public');
 // level up from both `src/` and `dist/`, and copied into the Docker image
 // alongside `dist/`.
 const docsDir = path.join(__dirname, '..', 'docs');
+// Leaflet's built files, for the hunt designer's map (see issue #61): found
+// in this app's own node_modules (the Docker image copies the production
+// ones), so the page loads no third-party script.
+const leafletDir = path.dirname(createRequire(import.meta.url).resolve('leaflet/dist/leaflet.js'));
 
 export type AppConfig = Pick<Config, 'gameServerUrl' | 'gameServerTimeoutMs'>;
 
@@ -223,6 +228,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   });
 
   app.use(express.static(publicDir));
+  app.use('/vendor/leaflet', express.static(leafletDir));
 
   // The in-app camera + geolocation capture page. Served explicitly (rather
   // than relying on express.static's index/extension handling) so it works

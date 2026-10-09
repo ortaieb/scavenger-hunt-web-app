@@ -2,7 +2,7 @@
 // decides lives in designer-logic.js; this file reads and writes the DOM,
 // keeps the organiser key for this tab, calls this app's designer relays,
 // and polls a running draft. A ready draft is reviewed card by card and
-// published here too (issue #60).
+// published here too (issue #60), under a map of its route (issue #61).
 //
 // The organiser key is typed once and kept in sessionStorage only (so it
 // goes when the tab closes), and sent only as `Authorization: Bearer
@@ -47,6 +47,7 @@ import {
   reviewCards,
   reviewOf,
   reviewSummary,
+  routeMap,
   runLine,
   runningDraftId,
   statusLabel,
@@ -55,11 +56,13 @@ import {
   validateEdit,
   validatePublish,
 } from './designer-logic.js';
+import { createRouteMap } from './designer-map.js';
 import { clockOffset } from './game-logic.js';
 
 const REQUEST_TIMEOUT_MS = 15000;
 const TICK_MS = 1000;
 const COPIED_MS = 2000;
+const HIGHLIGHT_MS = 2500;
 const KEY_STORAGE_KEY = 'scavenger-hunt.organiserKey';
 
 const el = (id) => document.getElementById(id);
@@ -135,6 +138,17 @@ let publishing = false;
 let publication = null;
 let publicationMessage = '';
 let publicationRequestId = 0;
+/**
+ * The route map, made the first time a finished draft is shown (it has to
+ * be on screen for that): null when Leaflet didn't load.
+ *
+ * @type {import('./designer-map.js').RouteMap | null | undefined}
+ */
+let mapView;
+/** The draft the map's view was last fitted to. */
+let mapFitted = '';
+let tilesFailed = false;
+let highlightTimer = null;
 
 // --- the key, for this tab only ----------------------------------------------
 // sessionStorage can throw (private browsing, blocked storage): then the
@@ -395,6 +409,8 @@ function renderDraft() {
   // codes and the hunt it became.
   const finished = status === 'ready' || status === 'published';
   el('draft-ready').hidden = !finished;
+  // The map first: the cards and rows link to its markers.
+  renderMap();
   renderReview();
   renderPublished();
   el('attribution').textContent = finished && typeof draft?.attribution === 'string' ? `Map data ${draft.attribution}` : '';
@@ -410,6 +426,99 @@ function renderDraft() {
     } else {
       link.removeAttribute('aria-current');
     }
+  }
+}
+
+// --- the route map -----------------------------------------------------------------
+
+const MAP_UNAVAILABLE = "The map couldn't load. The checkpoints below still work.";
+const TILES_FAILED = "The map couldn't load. The numbered places and the loop are still shown.";
+
+/**
+ * The open draft's route, once it's finished: drawn again whenever a review
+ * changes, but fitted to the view only when the draft is first shown, so a
+ * pan or zoom isn't undone.
+ */
+function renderMap() {
+  const view = routeMap(draft);
+  const shown = Boolean(view?.bounds);
+  el('map-block').hidden = !shown;
+  if (!view || !shown) {
+    // Take the places off the map, as well as off the screen.
+    mapView?.clear();
+    mapFitted = '';
+    return;
+  }
+  if (mapView === undefined) {
+    mapView = createRouteMap(el('route-map'), {
+      onSelect: showCheckpoint,
+      onTiles: (loaded) => {
+        tilesFailed = !loaded;
+        renderMapNote();
+      },
+    });
+  }
+  el('route-map').hidden = mapView === null;
+  if (mapView) {
+    mapView.draw(view, draft.id !== mapFitted);
+    mapFitted = draft.id;
+  }
+  renderMapNote();
+}
+
+function renderMapNote() {
+  showMessage('map-note', mapView === null ? MAP_UNAVAILABLE : tilesFailed ? TILES_FAILED : '');
+}
+
+/**
+ * A checkpoint's name: a button that finds it on the map when it's there,
+ * or the name alone.
+ *
+ * @param {number} position
+ * @param {string} text
+ * @returns {HTMLElement | string}
+ */
+function placeName(position, text) {
+  if (!mapView?.has(position)) {
+    return text;
+  }
+  const button = /** @type {HTMLButtonElement} */ (make('button', 'place-button', text));
+  button.type = 'button';
+  button.setAttribute('aria-describedby', 'locate-hint');
+  return button;
+}
+
+/**
+ * A marker was tapped: go to its card (its row, once published) and
+ * highlight it for a moment.
+ *
+ * @param {number} position
+ */
+function showCheckpoint(position) {
+  const li =
+    draft?.status === 'ready' ? cards.get(position)?.li : el('checkpoints').querySelector(`li[data-position="${position}"]`);
+  if (!li) {
+    return;
+  }
+  clearTimeout(highlightTimer);
+  for (const other of draftPanel.querySelectorAll('[data-highlighted]')) {
+    other.removeAttribute('data-highlighted');
+  }
+  li.setAttribute('data-highlighted', '');
+  // Its top, with the name and the review: a card can be taller than a phone's screen.
+  li.scrollIntoView?.({ block: 'start' });
+  li.focus({ preventScroll: true });
+  highlightTimer = setTimeout(() => li.removeAttribute('data-highlighted'), HIGHLIGHT_MS);
+}
+
+/**
+ * A checkpoint's name was tapped: centre the map on its marker.
+ *
+ * @param {number} position
+ */
+function showOnMap(position) {
+  if (mapView?.focus(position)) {
+    el('map-block').scrollIntoView?.({ block: 'start' });
   }
 }
 
@@ -811,10 +920,14 @@ function makeButton(action, text, className = '') {
 function buildCard(card) {
   const li = make('li', 'card');
   li.dataset.position = String(card.position);
+  // Focused when its marker is tapped.
+  li.tabIndex = -1;
 
   const head = make('div', 'card-head');
+  const name = make('h3', 'card-name');
+  name.append(placeName(card.position, `${card.position}. ${card.name}`));
   head.append(
-    make('h3', 'card-name', `${card.position}. ${card.name}`),
+    name,
     make('span', 'review-badge'),
     make('span', 'edited-mark', 'Edited'),
   );
@@ -1020,6 +1133,8 @@ async function sendEdit(position, edit, fill) {
       writeCard(position, formFromCheckpoint(saved));
     }
     updateCard(position);
+    // A review restyles its marker, and a rejection redraws the loop.
+    renderMap();
     renderSummary();
     renderPublishReadiness();
     return;
@@ -1076,6 +1191,11 @@ cardsEl.addEventListener('input', (event) => {
 });
 
 cardsEl.addEventListener('click', (event) => {
+  const place = event.target?.closest?.('button.place-button');
+  if (place) {
+    showOnMap(Number(place.closest('li.card')?.dataset.position));
+    return;
+  }
   const button = event.target?.closest?.('button[data-action]');
   const position = Number(button?.closest('li.card')?.dataset.position);
   if (!button || !cards.has(position)) {
@@ -1391,7 +1511,11 @@ function renderPublished() {
   el('checkpoints').replaceChildren(
     ...(published ? publishedRows(draft) : []).map((row) => {
       const li = make('li', 'checkpoint');
-      li.append(make('h3', 'checkpoint-name', `${row.position}. ${row.name}`));
+      li.dataset.position = String(row.position);
+      li.tabIndex = -1;
+      const name = make('h3', 'checkpoint-name');
+      name.append(placeName(row.position, `${row.position}. ${row.name}`));
+      li.append(name);
       const details = make('dl', 'checkpoint-details');
       details.append(make('dt', '', 'Clue'), make('dd', '', row.clue), make('dt', '', 'Pose'), make('dd', '', row.pose));
       li.append(details);
@@ -1400,6 +1524,13 @@ function renderPublished() {
   );
   renderPublication();
 }
+
+el('checkpoints').addEventListener('click', (event) => {
+  const place = event.target?.closest?.('button.place-button');
+  if (place) {
+    showOnMap(Number(place.closest('li.checkpoint')?.dataset.position));
+  }
+});
 
 // --- the key ---------------------------------------------------------------------
 

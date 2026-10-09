@@ -1,12 +1,14 @@
 // @vitest-environment happy-dom
 //
-// The hunt designer page (issues #59 and #60), run in a DOM against a stub
-// of the game-server's designer API behind this app's relays: the page's own
-// designer.js, with fetch answered in memory. The relays themselves are
+// The hunt designer page (issues #59, #60 and #61), run in a DOM against a
+// stub of the game-server's designer API behind this app's relays: the
+// page's own designer.js, with fetch answered in memory, and its map drawn by
+// the same Leaflet build /vendor/leaflet/ serves. The relays themselves are
 // tested in app.test.ts. Type-checked with the DOM's types by
 // tsconfig.dom.json.
 
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,6 +19,20 @@ const FAILED = '5b0c7a1e-2222-4222-8222-222222222222';
 const RUNNING = '5b0c7a1e-3333-4333-8333-333333333333';
 const SESSION = '33333333-3333-4333-8333-333333333333';
 const MODERATOR_CODE = 'MOD-7Q2KX9P4H3MN';
+
+/** The parts of Leaflet the tests watch. */
+interface Leaflet {
+  rectangle: (...args: unknown[]) => unknown;
+  polyline: (...args: unknown[]) => unknown;
+  Map: { prototype: { fitBounds: (...args: unknown[]) => unknown; panTo: (...args: unknown[]) => unknown } };
+}
+
+// The file the page's <script defer src="/vendor/leaflet/leaflet.js"> loads.
+// Like that script, it sets window.L.
+const leaflet = createRequire(import.meta.url)('leaflet/dist/leaflet.js') as Leaflet;
+const setLeaflet = (value: Leaflet | undefined) => {
+  (window as unknown as { L?: Leaflet }).L = value;
+};
 
 const html = readFileSync(path.join(import.meta.dirname, '..', 'src', 'public', 'designer.html'), 'utf8');
 const body = /<body>([\s\S]*)<\/body>/.exec(html)![1]!.replace(/<script[\s\S]*?<\/script>/g, '');
@@ -437,6 +453,7 @@ let localSetItem: ReturnType<typeof vi.spyOn>;
 let logged: ReturnType<typeof vi.spyOn>[];
 
 beforeEach(() => {
+  setLeaflet(leaflet);
   vi.useFakeTimers({ now: Date.parse('2026-10-08T09:00:00Z') });
   server = stubGameServer();
   vi.stubGlobal('fetch', server.fetch);
@@ -1422,6 +1439,227 @@ describe('publishing', () => {
   });
 });
 
+/** The markers on the map, in the order they were drawn. */
+const mapMarkers = () => [...document.querySelectorAll<HTMLElement>('#route-map .route-marker')];
+const mapMarker = (position: number) => mapMarkers().find((marker) => marker.textContent === String(position))!;
+/** A stub checkpoint's place, as Leaflet takes it. */
+const latLng = (position: number) => {
+  const { lat, long } = STUB_CHECKPOINTS[position - 1]!.place.location;
+  return [lat, long];
+};
+const placeButton = (li: Element) => li.querySelector('button.place-button') as HTMLButtonElement;
+
+describe('the route map', () => {
+  it("shows a ready draft's area, a numbered marker per checkpoint and the closed loop, with the attribution", async () => {
+    const fitBounds = vi.spyOn(leaflet.Map.prototype, 'fitBounds');
+    const rectangle = vi.spyOn(leaflet, 'rectangle');
+    const polyline = vi.spyOn(leaflet, 'polyline');
+    await openReadyDraft();
+
+    expect(visible('map-block')).toBe(true);
+    expect(visible('route-map')).toBe(true);
+    expect(visible('map-note')).toBe(false);
+    // The area's box, outlined.
+    expect(rectangle).toHaveBeenLastCalledWith(
+      [
+        [51.48, -0.27],
+        [51.5, -0.24],
+      ],
+      expect.objectContaining({ fill: false }),
+    );
+    expect(document.querySelector('#route-map path.route-area')).not.toBeNull();
+    // A numbered marker per checkpoint, in route order, named for its place.
+    expect(mapMarkers().map((marker) => marker.textContent)).toEqual(['1', '2', '3']);
+    expect(mapMarkers().map((marker) => marker.getAttribute('aria-label'))).toEqual([
+      '1. Stub Lantern Gate: To review',
+      '2. Stub Riverside Bench: To review',
+      "3. Stub Brewers' Arch: To review",
+    ]);
+    expect(mapMarker(1).classList.contains('route-marker--pending')).toBe(true);
+    // The loop through them, back to the first.
+    expect(polyline).toHaveBeenLastCalledWith([latLng(1), latLng(2), latLng(3), latLng(1)], expect.anything());
+    expect(document.querySelector('#route-map path.route-loop')).not.toBeNull();
+    // The view fits the box and the markers.
+    expect(fitBounds).toHaveBeenCalledTimes(1);
+    expect(fitBounds).toHaveBeenCalledWith(
+      [
+        [51.48, -0.27],
+        [51.5, -0.24],
+      ],
+      expect.anything(),
+    );
+    expect(document.querySelector('#route-map .leaflet-control-attribution')?.textContent).toContain(
+      '© OpenStreetMap contributors',
+    );
+  });
+
+  it('is not shown while a draft is running, nor for a failed one', async () => {
+    server.drafts.set(RUNNING, {
+      id: RUNNING,
+      status: 'running',
+      request: { area: 'Chiswick, London', theme: 'The Thames', checkpoints: 3, 'max-walk-km': 3 },
+      area: null,
+      progress: [],
+      checkpoints: [],
+      route: null,
+      problems: [],
+      run: { runner: 'stub', model: null, turns: 0, 'cost-usd': 0, 'duration-ms': null, error: null },
+      published: null,
+      'created-at': '2026-10-08T08:59:00Z',
+      'finished-at': null,
+    });
+    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
+    await loadPage(`/designer?draft=${RUNNING}`);
+
+    expect(text('draft-status')).toBe('Designing…');
+    expect(visible('map-block')).toBe(false);
+    expect(mapMarkers()).toHaveLength(0);
+  });
+
+  it("fades a rejected checkpoint's marker and redraws the loop without it, keeping the view", async () => {
+    const fitBounds = vi.spyOn(leaflet.Map.prototype, 'fitBounds');
+    const polyline = vi.spyOn(leaflet, 'polyline');
+    await openReadyDraft();
+
+    await clickCard(2, 'rejected');
+    expect(mapMarker(2).classList.contains('route-marker--rejected')).toBe(true);
+    expect(mapMarker(2).getAttribute('aria-label')).toBe('2. Stub Riverside Bench: Rejected');
+    expect(polyline).toHaveBeenLastCalledWith([latLng(1), latLng(3), latLng(1)], expect.anything());
+
+    await clickCard(1, 'accepted');
+    expect(mapMarker(1).classList.contains('route-marker--accepted')).toBe(true);
+    expect(mapMarker(1).getAttribute('aria-label')).toBe('1. Stub Lantern Gate: Accepted');
+    expect(polyline).toHaveBeenLastCalledWith([latLng(1), latLng(3), latLng(1)], expect.anything());
+
+    // Undo puts it back in the loop.
+    await clickCard(2, 'pending');
+    expect(mapMarker(2).classList.contains('route-marker--pending')).toBe(true);
+    expect(polyline).toHaveBeenLastCalledWith([latLng(1), latLng(2), latLng(3), latLng(1)], expect.anything());
+    // Fitted once, when it was first shown: a review doesn't undo a pan or zoom.
+    expect(fitBounds).toHaveBeenCalledTimes(1);
+  });
+
+  it('goes to the card of a tapped marker, and highlights it for a moment', async () => {
+    await openReadyDraft();
+
+    mapMarker(2).click();
+    expect(card(2).hasAttribute('data-highlighted')).toBe(true);
+    expect(document.activeElement).toBe(card(2));
+
+    mapMarker(3).click();
+    expect(card(2).hasAttribute('data-highlighted')).toBe(false);
+    expect(card(3).hasAttribute('data-highlighted')).toBe(true);
+    expect(document.activeElement).toBe(card(3));
+
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(card(3).hasAttribute('data-highlighted')).toBe(false);
+    // Tapping a marker sends nothing.
+    expect(server.patches()).toHaveLength(0);
+  });
+
+  it("centres the map on a checkpoint's marker when its name is tapped", async () => {
+    const panTo = vi.spyOn(leaflet.Map.prototype, 'panTo');
+    await openReadyDraft();
+
+    expect(placeButton(card(3)).textContent).toBe("3. Stub Brewers' Arch");
+    expect(placeButton(card(3)).getAttribute('aria-describedby')).toBe('locate-hint');
+    placeButton(card(3)).click();
+    await settle();
+
+    expect(panTo).toHaveBeenCalledTimes(1);
+    const [lat, lng] = latLng(3);
+    expect(panTo.mock.calls[0]![0]).toMatchObject({ lat, lng });
+    expect(document.querySelector('#route-map .leaflet-tooltip')?.textContent).toBe("3. Stub Brewers' Arch: To review");
+    // It's not a review action: nothing is sent.
+    expect(server.patches()).toHaveLength(0);
+    expect(cardText(3, '.review-badge')).toBe('To review');
+  });
+
+  it('says when the tiles fail, and the markers and the cards still work', async () => {
+    await openReadyDraft();
+
+    const tile = document.querySelector('#route-map img.leaflet-tile')!;
+    // OpenStreetMap is told this app's origin, never the page's address.
+    expect(tile.getAttribute('referrerpolicy')).toBe('strict-origin');
+    expect(tile.getAttribute('src')).toMatch(/^https:\/\/tile\.openstreetmap\.org\/\d+\/\d+\/\d+\.png$/);
+    tile.dispatchEvent(new Event('error'));
+    await settle();
+
+    expect(visible('map-note')).toBe(true);
+    expect(text('map-note')).toBe("The map couldn't load. The numbered places and the loop are still shown.");
+    expect(mapMarkers()).toHaveLength(3);
+    mapMarker(1).click();
+    expect(card(1).hasAttribute('data-highlighted')).toBe(true);
+    await clickCard(1, 'accepted');
+    expect(cardText(1, '.review-badge')).toBe('Accepted');
+    expect(mapMarker(1).classList.contains('route-marker--accepted')).toBe(true);
+  });
+
+  it("says when Leaflet couldn't load, and the cards still work without it", async () => {
+    setLeaflet(undefined);
+    await openReadyDraft();
+
+    expect(visible('map-block')).toBe(true);
+    expect(visible('route-map')).toBe(false);
+    expect(text('map-note')).toBe("The map couldn't load. The checkpoints below still work.");
+    // The names are plain headings, with no map to find them on.
+    expect(placeButton(card(1))).toBeNull();
+    expect(cardText(1, '.card-name')).toBe('1. Stub Lantern Gate');
+
+    await clickCard(1, 'accepted');
+    expect(cardText(1, '.review-badge')).toBe('Accepted');
+    expect(text('count-accepted')).toBe('1 accepted');
+  });
+
+  it("shows a published hunt's checkpoints only, numbered as the session numbers them, linked to its rows", async () => {
+    await openReadyDraft();
+    await clickCard(1, 'accepted');
+    await clickCard(2, 'rejected');
+    await clickCard(3, 'accepted');
+    // Published as it stands (the stub's three can't make 3 accepted with
+    // one rejected), and opened again.
+    server.drafts.get(DRAFT)!.status = 'published';
+    await reloadPage(`/designer?draft=${DRAFT}`);
+
+    expect(text('draft-status')).toBe('Published');
+    expect(visible('map-block')).toBe(true);
+    expect(mapMarkers().map((marker) => marker.getAttribute('aria-label'))).toEqual([
+      '1. Stub Lantern Gate',
+      "2. Stub Brewers' Arch",
+    ]);
+    expect(items('checkpoints')[1]).toMatch(/^2\. Stub Brewers' Arch/);
+
+    mapMarker(2).click();
+    const row = $('checkpoints').querySelector('li[data-position="2"]')!;
+    expect(row.hasAttribute('data-highlighted')).toBe(true);
+    expect(document.activeElement).toBe(row);
+
+    const panTo = vi.spyOn(leaflet.Map.prototype, 'panTo');
+    placeButton(row).click();
+    const [lat, lng] = latLng(3);
+    expect(panTo.mock.calls[0]![0]).toMatchObject({ lat, lng });
+  });
+
+  it('takes the places off the map when the draft is closed, and when the key is forgotten', async () => {
+    await openReadyDraft();
+    expect(mapMarkers()).toHaveLength(3);
+
+    $('draft-close').click();
+    await settle();
+    expect(visible('map-block')).toBe(false);
+    expect(mapMarkers()).toHaveLength(0);
+
+    ($('drafts').querySelector('a.draft-link') as HTMLAnchorElement).click();
+    await settle();
+    expect(mapMarkers()).toHaveLength(3);
+
+    $('sign-out').click();
+    await settle();
+    expect(mapMarkers()).toHaveLength(0);
+    expect(document.querySelector('#route-map .leaflet-tooltip')).toBeNull();
+  });
+});
+
 describe('privacy', () => {
   it('writes nothing from a draft, and never the key, to localStorage, the URL or the console', async () => {
     await loadPage();
@@ -1450,6 +1688,10 @@ describe('privacy', () => {
 
   it('writes no code, clue, scene or coordinate to storage, the URL or the console while reviewing and publishing', async () => {
     await openReadyDraft();
+    // The map, both ways: a marker to its card, and a card's name to its marker.
+    mapMarker(2).click();
+    placeButton(card(3)).click();
+    await settle();
     type('card-1-scene', 'A lamp on a stone gatepost, ivy behind.');
     await clickCard(1, 'save');
     for (const position of [1, 2, 3]) {

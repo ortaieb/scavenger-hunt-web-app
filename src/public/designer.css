@@ -1,4 +1,4 @@
-/* The hunt designer at /designer (issues #59 and #60). Builds on play.css
+/* The hunt designer at /designer (issues #59, #60 and #61). Builds on play.css
    (its colours, buttons and messages) and moderator.css (its panels, the
    Forget key button and the confirm dialog's actions), and works from a
    phone up to a laptop. */
@@ -22,9 +22,13 @@
   display: none;
 }
 
-/* Opening a draft or Try again scrolls to it: clear of the sticky header. */
+/* Opening a draft or Try again scrolls to it, as the route map scrolls to a
+   card and back: clear of the sticky header. */
 .designer .panel,
-#design-form {
+#design-form,
+.map-block,
+.card,
+.checkpoint {
   scroll-margin-top: 5rem;
 }
 
@@ -686,4 +690,89 @@
 
 #publication-retry[hidden] {
   display: none;
+}
+
+/* The route map (issue #61), at the top of a finished draft: about half the
+   screen on a phone, and no taller than it needs to be on a laptop. */
+.map-block {
+  display: grid;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.route-map {
+  height: 50vh;
+  height: clamp(16rem, 50svh, 34rem);
+  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  /* Its own stacking context: Leaflet's panes and controls (z-index 400 to
+     1000) stay under the sticky header and the summary bar. */
+  position: relative;
+  z-index: 0;
+}
+
+.map-note,
+.map-key {
+  margin: 0;
+}
+
+/* A numbered marker. Its review is in its title and on its card too; the
+   colour only repeats it, and a rejected one is faded and dashed. */
+.route-marker {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 3px solid #ffffff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.6);
+  color: #111318;
+  font: 700 0.95rem/1 system-ui, sans-serif;
+}
+
+.route-marker--pending {
+  background: #fde68a;
+}
+
+.route-marker--accepted {
+  background: #4ade80;
+}
+
+.route-marker--rejected {
+  background: #e5e7eb;
+  border-style: dashed;
+  border-color: #4b5563;
+  opacity: 0.5;
+}
+
+.route-marker:focus-visible {
+  outline: 3px solid #312e81;
+  outline-offset: 2px;
+}
+
+/* A checkpoint's name finds it on the map: a link-like button in its
+   heading, not a full-width one. */
+.place-button {
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline dotted;
+  text-underline-offset: 0.2em;
+}
+
+/* A button doesn't take its heading's line-through: a rejected card's name
+   is struck through here too. */
+.card--rejected .place-button {
+  text-decoration: line-through;
+}
+
+/* The card or row whose marker was just tapped. */
+.card[data-highlighted],
+.checkpoint[data-highlighted] {
+  box-shadow: 0 0 0 3px var(--link);
 }

@@ -10,7 +10,11 @@
     <title>Scavenger Hunt — Hunt designer</title>
     <link rel="stylesheet" href="/play.css" />
     <link rel="stylesheet" href="/moderator.css" />
+    <!-- Leaflet, for the route map: served by this app, never a CDN. -->
+    <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
     <link rel="stylesheet" href="/designer.css" />
+    <!-- Deferred, so it runs before designer.js (a module, also deferred). -->
+    <script defer src="/vendor/leaflet/leaflet.js"></script>
   </head>
   <body>
     <header class="top">
@@ -72,6 +76,19 @@
           </div>
 
           <div id="draft-ready" class="draft-section" hidden>
+            <!-- The route map: the area, the places and the loop. Tap a
+                 marker to go to its checkpoint, or a checkpoint's name to
+                 find it on the map. -->
+            <section id="map-block" class="map-block" aria-label="Route map" hidden>
+              <div id="route-map" class="route-map"></div>
+              <p id="map-note" class="message message--note map-note" role="status" hidden></p>
+              <p class="note map-key">
+                Numbered in walking order and joined by the loop, as the crow flies. Rejected places are faded and
+                left out of the loop. The dashed box is the area.
+              </p>
+              <span id="locate-hint" class="visually-hidden">Shows it on the map.</span>
+            </section>
+
             <!-- A ready draft: review each checkpoint, then publish it. -->
             <div id="draft-review" hidden>
               <h2>Review the checkpoints</h2>
