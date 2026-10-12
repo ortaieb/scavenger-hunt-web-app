@@ -1913,6 +1913,174 @@ describe('game loop relays pass new fields through unchanged', () => {
   });
 });
 
+describe('the /mcp relay', () => {
+  const initialize = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}';
+
+  function sseResponse(status: number, headers: Record<string, string> = {}): Response {
+    return new Response('event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\n\n', {
+      status,
+      headers: { 'content-type': 'text/event-stream', ...headers },
+    });
+  }
+
+  it('relays a POST with the raw body and the MCP headers, and passes the MCP headers back', async () => {
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      Promise.resolve(sseResponse(200, { 'mcp-session-id': 'sess-2', 'x-other': 'dropped' })),
+    );
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/mcp')
+      .set('authorization', 'Bearer organiser-key')
+      .set('accept', 'application/json, text/event-stream')
+      .set('content-type', 'application/json')
+      .set('mcp-protocol-version', '2025-06-18')
+      .set('mcp-session-id', 'sess-1')
+      .set('cookie', 'not=forwarded')
+      .send(initialize);
+
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(url.href).toBe('http://game-server.test/mcp');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({
+      authorization: 'Bearer organiser-key',
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+      'mcp-protocol-version': '2025-06-18',
+      'mcp-session-id': 'sess-1',
+    });
+    expect(Buffer.from(init.body as Buffer).toString()).toBe(initialize);
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toContain('text/event-stream');
+    expect(response.headers['mcp-session-id']).toBe('sess-2');
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.headers['x-other']).toBeUndefined();
+    expect(response.text).toContain('"result"');
+  });
+
+  it('passes a body through byte for byte, without re-encoding the JSON', async () => {
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(sseResponse(200)));
+    const odd = '{ "a" :   1,\n"b":"\\u00e9" }';
+
+    await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/mcp')
+      .set('content-type', 'application/json')
+      .send(odd);
+
+    const init = (fetchMock.mock.calls[0] as [URL, RequestInit])[1];
+    expect(Buffer.from(init.body as Buffer).toString()).toBe(odd);
+  });
+
+  it.each([
+    ['GET', (app: ReturnType<typeof createApp>) => request(app).get('/mcp')],
+    ['DELETE', (app: ReturnType<typeof createApp>) => request(app).delete('/mcp')],
+  ])('relays a %s with no body, and adds no Authorization', async (method, send) => {
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(new Response(null, { status: 202 })));
+
+    const response = await send(createApp(testConfig, { fetch: fetchMock }));
+
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(url.href).toBe('http://game-server.test/mcp');
+    expect(init.method).toBe(method);
+    expect(init.body).toBeUndefined();
+    expect(init.headers).toEqual({});
+    expect(response.status).toBe(202);
+  });
+
+  it('passes a 401 and its WWW-Authenticate through unchanged', async () => {
+    const challenge =
+      'Bearer resource_metadata="https://hunt.test/.well-known/oauth-protected-resource/mcp"';
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        new Response('{"detail":"unauthorised"}', {
+          status: 401,
+          headers: { 'content-type': 'application/json', 'www-authenticate': challenge },
+        }),
+      ),
+    );
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/mcp')
+      .set('content-type', 'application/json')
+      .send(initialize);
+
+    expect(response.status).toBe(401);
+    expect(response.headers['www-authenticate']).toBe(challenge);
+    expect(response.body).toEqual({ detail: 'unauthorised' });
+  });
+
+  it('relays the OAuth protected-resource metadata, and the game-server\'s 404 until it has one', async () => {
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(jsonResponse(404, { detail: 'not found' })));
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock })).get(
+      '/.well-known/oauth-protected-resource/mcp',
+    );
+
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(url.href).toBe('http://game-server.test/.well-known/oauth-protected-resource/mcp');
+    expect(init.method).toBe('GET');
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ detail: 'not found' });
+  });
+
+  it('waits at least 30 s, however short the other relays\' timeout', async () => {
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(sseResponse(200)));
+      const app = createApp({ ...testConfig, gameServerTimeoutMs: 30 }, { fetch: fetchMock });
+
+      await request(app).post('/mcp').set('content-type', 'application/json').send(initialize);
+
+      expect(setTimeoutSpy.mock.calls.some(([, ms]) => ms === 30_000)).toBe(true);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  it('answers 502 when the game-server times out or can\'t be reached', async () => {
+    for (const error of [new DOMException('aborted', 'AbortError'), new TypeError('fetch failed')]) {
+      const fetchMock = vi.fn<typeof fetch>(() => Promise.reject(error));
+
+      const response = await request(createApp(testConfig, { fetch: fetchMock }))
+        .post('/mcp')
+        .set('content-type', 'application/json')
+        .send(initialize);
+
+      expect(response.status).toBe(502);
+      expect((response.body as ErrorBody).error).toMatch(/Could not reach the game server/);
+    }
+  });
+
+  it('refuses a body over 1 MB without calling the game-server', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/mcp')
+      .set('content-type', 'application/json')
+      .send(Buffer.alloc(1024 * 1024 + 1, 'a'));
+
+    expect(response.status).toBe(413);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('logs nothing about the request', async () => {
+    const logs = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => undefined),
+    );
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(sseResponse(200)));
+
+    await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/mcp')
+      .set('authorization', 'Bearer NEVERLOGTHIS')
+      .set('content-type', 'application/json')
+      .send('{"secret":"NEVERLOGTHIS"}');
+
+    for (const log of logs) {
+      expect(log).not.toHaveBeenCalled();
+      log.mockRestore();
+    }
+  });
+});
+
 describe('unknown routes', () => {
   it('responds with 404', async () => {
     const response = await request(createApp(testConfig)).get('/nope');
