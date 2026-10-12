@@ -659,5 +659,69 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     await relayAuthorised(req, res, `/designer/drafts/${encodeURIComponent(draft)}/publication`, { noStore: true });
   });
 
+  // The organiser MCP server (see issue #70): Claude reaches the
+  // game-server's `/mcp` through this app, so the URL people give Claude
+  // never changes. Like relayAuthorised, `Authorization` is forwarded
+  // unchanged when present and never added, nothing about the request is
+  // logged, and the response is kept by neither a cache nor a proxy. The
+  // body goes through raw (no JSON re-encoding), and the response is
+  // streamed, since it may be an event stream.
+  const MCP_REQUEST_HEADERS = ['authorization', 'accept', 'content-type', 'mcp-protocol-version', 'mcp-session-id'];
+  const MCP_RESPONSE_HEADERS = ['content-type', 'mcp-session-id', 'www-authenticate'];
+  // `get_hunt_draft` can wait up to 20 s for a draft, so the relay waits
+  // longer than that whatever the other relays' timeout is.
+  const mcpTimeoutMs = Math.max(config.gameServerTimeoutMs, 30_000);
+
+  async function relayMcp(req: Request, res: ExpressResponse, upstreamPath: string): Promise<void> {
+    const headers: Record<string, string> = {};
+    for (const name of MCP_REQUEST_HEADERS) {
+      const value = req.get(name);
+      if (value !== undefined) {
+        headers[name] = value;
+      }
+    }
+    const body: unknown = req.method === 'POST' && Buffer.isBuffer(req.body) ? req.body : undefined;
+
+    try {
+      const upstream = await fetchWithTimeout(
+        doFetch,
+        new URL(upstreamPath, config.gameServerUrl),
+        { method: req.method, headers, body: body as BodyInit | undefined },
+        mcpTimeoutMs,
+      );
+      res.status(upstream.status);
+      for (const name of MCP_RESPONSE_HEADERS) {
+        const value = upstream.headers.get(name);
+        if (value !== null) {
+          res.set(name, value);
+        }
+      }
+      res.set('cache-control', 'no-store');
+      if (upstream.body) {
+        await pipeline(Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>), res);
+      } else {
+        res.end();
+      }
+    } catch (err) {
+      if (res.headersSent || res.destroyed) {
+        res.destroy();
+        return;
+      }
+      // A timeout is a 502 here too: Claude's MCP client sees one kind of
+      // "the server behind this URL didn't answer".
+      res.status(502).json({ error: `Could not reach the game server: ${describeError(err)}` });
+    }
+  }
+
+  const mcpBody = express.raw({ type: () => true, limit: '1mb' });
+  app.post('/mcp', mcpBody, (req, res) => relayMcp(req, res, '/mcp'));
+  app.get('/mcp', (req, res) => relayMcp(req, res, '/mcp'));
+  app.delete('/mcp', (req, res) => relayMcp(req, res, '/mcp'));
+  // For OAuth discovery (game-server issue #131); the game-server's 404
+  // passes through until then.
+  app.get('/.well-known/oauth-protected-resource/mcp', (req, res) =>
+    relayMcp(req, res, '/.well-known/oauth-protected-resource/mcp'),
+  );
+
   return app;
 }

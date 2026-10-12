@@ -558,6 +558,30 @@ then the same three fictional checkpoints, ready in a second or so. Accept
 all three and publish it, and a team can join the new session from `/play`
 with its join code.
 
+### MCP relay
+
+Claude reaches the game-server's organiser MCP server through this app, so
+the URL people give Claude never changes (and stays the same once the
+game-server has no public domain of its own):
+
+```
+https://<this app's domain>/mcp
+```
+
+| This app | Game-server |
+| --- | --- |
+| `POST /mcp`, `GET /mcp`, `DELETE /mcp` | the same, at `${GAME_SERVER_URL}/mcp` |
+| `GET /.well-known/oauth-protected-resource/mcp` | the same path (`404` until the game-server serves it) |
+
+The body goes through raw, up to 1 MB. `Authorization` is forwarded
+unchanged when present, never added, and nothing about the request is
+logged. Of the request headers, `accept`, `content-type`,
+`mcp-protocol-version` and `mcp-session-id` go upstream; the status and
+`content-type`, `mcp-session-id` and `www-authenticate` (for OAuth
+discovery) come back, uncached, with the body streamed. The relay waits
+`GAME_SERVER_TIMEOUT_MS`, but at least 30 s, since `get_hunt_draft` can wait up to
+20 s; when the game-server can't be reached in time the answer is `502`.
+
 ## Scripts
 
 | Script              | Description                                  |
