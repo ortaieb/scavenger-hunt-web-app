@@ -680,13 +680,13 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
         headers[name] = value;
       }
     }
-    const body: unknown = req.method === 'POST' && Buffer.isBuffer(req.body) ? req.body : undefined;
+    const body = req.method === 'POST' && Buffer.isBuffer(req.body) ? req.body : undefined;
 
     try {
       const upstream = await fetchWithTimeout(
         doFetch,
         new URL(upstreamPath, config.gameServerUrl),
-        { method: req.method, headers, body: body as BodyInit | undefined },
+        { method: req.method, headers, body },
         mcpTimeoutMs,
       );
       res.status(upstream.status);
