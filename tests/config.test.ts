@@ -10,6 +10,7 @@ describe('loadConfig', () => {
       host: '0.0.0.0',
       gameServerUrl: 'http://localhost:8000',
       gameServerTimeoutMs: 45000,
+      requireSignIn: false,
     });
   });
 
@@ -21,6 +22,61 @@ describe('loadConfig', () => {
     const unset = loadConfig({ CLERK_PUBLISHABLE_KEY: '', CLERK_FRONTEND_API: '' });
     expect(unset.clerkPublishableKey).toBeUndefined();
     expect(unset.clerkFrontendApi).toBeUndefined();
+  });
+
+  describe('sign-in checks (issue #66)', () => {
+    const clerk = {
+      CLERK_PUBLISHABLE_KEY: 'pk_test_abc',
+      CLERK_SECRET_KEY: 'sk_test_abc',
+      APP_ORIGIN: 'https://hunt.example',
+    };
+
+    it('does not require sign-in by default, or when empty', () => {
+      expect(loadConfig({}).requireSignIn).toBe(false);
+      expect(loadConfig({ REQUIRE_SIGN_IN: '' }).requireSignIn).toBe(false);
+      expect(loadConfig({ REQUIRE_SIGN_IN: 'false' }).requireSignIn).toBe(false);
+    });
+
+    it('reads the settings', () => {
+      expect(loadConfig({ ...clerk, REQUIRE_SIGN_IN: 'true', CLERK_JWT_KEY: 'a-key' })).toMatchObject({
+        requireSignIn: true,
+        clerkSecretKey: 'sk_test_abc',
+        clerkJwtKey: 'a-key',
+        appOrigin: 'https://hunt.example',
+      });
+    });
+
+    it('turns literal \\n in CLERK_JWT_KEY into newlines', () => {
+      const config = loadConfig({ CLERK_JWT_KEY: '-----BEGIN PUBLIC KEY-----\\nabc\\n-----END PUBLIC KEY-----' });
+
+      expect(config.clerkJwtKey).toBe('-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----');
+    });
+
+    it('accepts an APP_ORIGIN with a trailing slash, as its origin', () => {
+      expect(loadConfig({ APP_ORIGIN: 'https://hunt.example/' }).appOrigin).toBe('https://hunt.example');
+    });
+
+    it.each(['yes', 'TRUE', '1'])('rejects REQUIRE_SIGN_IN=%s rather than guessing', (value) => {
+      expect(() => loadConfig({ REQUIRE_SIGN_IN: value })).toThrow(/Invalid REQUIRE_SIGN_IN/);
+    });
+
+    it.each(['hunt.example', 'https://hunt.example/play', 'ftp://hunt.example', 'not a url'])(
+      'rejects APP_ORIGIN=%s',
+      (value) => {
+        expect(() => loadConfig({ APP_ORIGIN: value })).toThrow(/Invalid APP_ORIGIN/);
+      },
+    );
+
+    it('fails at startup when sign-in is required but Clerk is not set up', () => {
+      expect(() => loadConfig({ REQUIRE_SIGN_IN: 'true' })).toThrow(/CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY/);
+      expect(() => loadConfig({ REQUIRE_SIGN_IN: 'true', CLERK_PUBLISHABLE_KEY: 'pk_test_abc' })).toThrow(
+        /CLERK_SECRET_KEY/,
+      );
+    });
+
+    it('fails at startup when sign-in is required but APP_ORIGIN is not set', () => {
+      expect(() => loadConfig({ ...clerk, APP_ORIGIN: undefined, REQUIRE_SIGN_IN: 'true' })).toThrow(/APP_ORIGIN/);
+    });
   });
 
   it('reads PORT and HOST from the environment', () => {

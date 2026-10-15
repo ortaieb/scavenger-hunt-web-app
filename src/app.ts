@@ -5,7 +5,13 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { fileURLToPath } from 'node:url';
-import express, { type Express, type Request, type Response as ExpressResponse } from 'express';
+import { clerkMiddleware, getAuth } from '@clerk/express';
+import express, {
+  type Express,
+  type RequestHandler,
+  type Request,
+  type Response as ExpressResponse,
+} from 'express';
 import { marked } from 'marked';
 import multer from 'multer';
 import type { Config } from './config.ts';
@@ -25,7 +31,12 @@ const docsDir = path.join(__dirname, '..', 'docs');
 const leafletDir = path.dirname(createRequire(import.meta.url).resolve('leaflet/dist/leaflet.js'));
 
 export type AppConfig = Pick<Config, 'gameServerUrl' | 'gameServerTimeoutMs'> &
-  Partial<Pick<Config, 'clerkPublishableKey' | 'clerkFrontendApi'>>;
+  Partial<
+    Pick<
+      Config,
+      'clerkPublishableKey' | 'clerkFrontendApi' | 'clerkSecretKey' | 'clerkJwtKey' | 'appOrigin' | 'requireSignIn'
+    >
+  >;
 
 export interface AppDeps {
   /** Injectable for tests; defaults to the global fetch. */
@@ -170,6 +181,47 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
 
   app.disable('x-powered-by');
 
+  // The play relays check a player's Clerk session token (see issue #66).
+  // Tokens are verified here with Clerk's public key, so no request makes a
+  // network call, and only for a token issued to this app's own origin.
+  // Mounted on the play relays alone, not on the whole app: for a request
+  // with no token, a development instance's middleware can answer a page load
+  // with a redirect to Clerk (a "handshake"), and nothing but these fetches
+  // should ever depend on a player being signed in.
+  // @clerk/express insists on a secret key even when the JWT key makes every
+  // check local, so both are needed for it to run.
+  const clerkEnabled = Boolean(config.clerkPublishableKey && config.clerkSecretKey);
+  const playAuth: RequestHandler[] = [];
+  if (clerkEnabled) {
+    playAuth.push(
+      clerkMiddleware({
+        publishableKey: config.clerkPublishableKey,
+        secretKey: config.clerkSecretKey,
+        jwtKey: config.clerkJwtKey,
+        authorizedParties: config.appOrigin ? [config.appOrigin] : undefined,
+      }),
+    );
+  }
+  // With sign-in required, a call with no signed-in player is turned away
+  // here and never reaches the game-server. Without a working Clerk setup
+  // nobody is signed in, so it fails closed.
+  playAuth.push((req, res, next) => {
+    if (config.requireSignIn) {
+      const userId = clerkEnabled ? getAuth(req, { acceptsToken: 'session_token' }).userId : null;
+      if (!userId) {
+        res.status(401).set('cache-control', 'no-store').json({ detail: 'sign-in required', code: 'sign_in_required' });
+        return;
+      }
+    }
+    next();
+  });
+  // The token goes on to the game-server unchanged when there is one, and is
+  // never added, defaulted or logged.
+  const authorizationHeader = (req: Request): Record<string, string> => {
+    const authorization = req.get('authorization');
+    return authorization === undefined ? {} : { authorization };
+  };
+
   // The participant app (see issue #40) is the front door: `/` and `/play`
   // both serve it.
   const sendPlay = (_req: Request, res: ExpressResponse) => {
@@ -209,6 +261,8 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     res.set('cache-control', 'no-store').json({
       clerkPublishableKey: config.clerkPublishableKey ?? null,
       clerkFrontendApi: config.clerkFrontendApi ?? null,
+      // So /play knows to ask for a sign-in before joining (see issue #66).
+      requireSignIn: config.requireSignIn ?? false,
     });
   });
 
@@ -264,7 +318,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // via CORS, so the request has to go server-to-server.
   // Express 5 forwards a rejected handler promise to the error middleware,
   // so this can be async without an extra try/catch wrapper at the top level.
-  app.post('/challenge', upload.single('image'), async (req: Request, res: ExpressResponse) => {
+  app.post('/challenge', ...playAuth, upload.single('image'), async (req: Request, res: ExpressResponse) => {
     const { latitude, longitude, capturedAt, session, participant, checkpoint } = req.body as Record<
       string,
       string | undefined
@@ -314,7 +368,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
       const upstream = await fetchWithTimeout(
         doFetch,
         new URL('/challenge', config.gameServerUrl),
-        { method: 'POST', body: form },
+        { method: 'POST', headers: authorizationHeader(req), body: form },
         config.gameServerTimeoutMs,
       );
       const body = await upstream.text();
@@ -340,11 +394,11 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // only (see issue #15), so it does no validation of its own; the
   // game-server's answer (in_range: true|false) never includes checkpoint
   // coordinates, distance or a radius, and neither does this relay.
-  app.post('/checkpoint/proximity', express.json(), async (req: Request, res: ExpressResponse) => {
+  app.post('/checkpoint/proximity', ...playAuth, express.json(), async (req: Request, res: ExpressResponse) => {
     try {
       const upstream = await doFetch(new URL('/checkpoint/proximity', config.gameServerUrl), {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...authorizationHeader(req) },
         body: JSON.stringify(req.body),
       });
       const body = await upstream.text();
@@ -363,12 +417,16 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // ticking a box that starts unticked, and the game-server alone decides
   // whether the code/consent are valid (see issue #30). The body may carry
   // the team's join code — never logged.
-  app.post('/join', express.json(), async (req: Request, res: ExpressResponse) => {
+  app.post('/join', ...playAuth, express.json(), async (req: Request, res: ExpressResponse) => {
     try {
       const upstream = await fetchWithTimeout(
         doFetch,
         new URL('/join', config.gameServerUrl),
-        { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req.body) },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...authorizationHeader(req) },
+          body: JSON.stringify(req.body),
+        },
         config.gameServerTimeoutMs,
       );
       const body = await upstream.text();
@@ -388,7 +446,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // Relays a participant's current state, for the same HTTPS/CORS reasons
   // as the other relays. Validates session/participant as UUIDs before
   // forwarding (400 otherwise, nothing sent upstream) — see issue #30.
-  app.get('/state', async (req: Request, res: ExpressResponse) => {
+  app.get('/state', ...playAuth, async (req: Request, res: ExpressResponse) => {
     const { session, participant } = req.query as Record<string, string | undefined>;
 
     if (!isValidUuid(session) || !isValidUuid(participant)) {
@@ -403,7 +461,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
           `/sessions/${encodeURIComponent(session)}/participants/${encodeURIComponent(participant)}/state`,
           config.gameServerUrl,
         ),
-        {},
+        { headers: authorizationHeader(req) },
         config.gameServerTimeoutMs,
       );
       const body = await upstream.text();
@@ -426,7 +484,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // upstream only { checkpoint } — session/participant are already encoded
   // into the upstream URL path, matching its shape (see issue #30). The
   // response carries a short-lived, team-private code — never logged.
-  app.post('/arrive', express.json(), async (req: Request, res: ExpressResponse) => {
+  app.post('/arrive', ...playAuth, express.json(), async (req: Request, res: ExpressResponse) => {
     const { session, participant, checkpoint } = (req.body ?? {}) as Record<string, unknown>;
 
     if (!isValidUuid(session) || !isValidUuid(participant)) {
@@ -447,7 +505,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
         ),
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', ...authorizationHeader(req) },
           body: JSON.stringify({ checkpoint }),
         },
         config.gameServerTimeoutMs,
@@ -529,6 +587,54 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
       res.status(502).json({ error: `Could not reach the game server: ${describeError(err)}` });
     }
   }
+
+  // A new account's first call (see issue #66): the game-server creates the
+  // person and puts their id into Clerk, after a `provisioning_required`.
+  // Needs the token and nothing else; it answers `{ "pid" }`.
+  app.post('/me/provision', ...playAuth, async (req: Request, res: ExpressResponse) => {
+    await relayAuthorised(req, res, '/me/provision', { method: 'POST', noStore: true });
+  });
+
+  // Clerk's webhooks (see issue #66), passed to the game-server as they came:
+  // the raw body, byte for byte, and the three Svix headers, because the
+  // signature is over those exact bytes. Nothing is parsed or checked here;
+  // the game-server alone holds the signing secret and decides, and its
+  // status is the answer (anything but 2xx makes Svix retry). The body is
+  // personal data, so it is never logged.
+  const WEBHOOK_HEADERS = ['content-type', 'svix-id', 'svix-timestamp', 'svix-signature'];
+  app.post(
+    '/webhooks/clerk',
+    express.raw({ type: () => true, limit: '1mb' }),
+    async (req: Request, res: ExpressResponse) => {
+      const headers: Record<string, string> = {};
+      for (const name of WEBHOOK_HEADERS) {
+        const value = req.get(name);
+        if (value !== undefined) {
+          headers[name] = value;
+        }
+      }
+      const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+
+      try {
+        const upstream = await fetchWithTimeout(
+          doFetch,
+          new URL('/internal/clerk-events', config.gameServerUrl),
+          { method: 'POST', headers, body },
+          config.gameServerTimeoutMs,
+        );
+        res
+          .status(upstream.status)
+          .type(upstream.headers.get('content-type') ?? 'application/json')
+          .send(await upstream.text());
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          res.status(504).json({ error: 'The game server took too long to respond' });
+          return;
+        }
+        res.status(502).json({ error: `Could not reach the game server: ${describeError(err)}` });
+      }
+    },
+  );
 
   const sessionPath = (session: string) => `/sessions/${encodeURIComponent(session)}`;
 
