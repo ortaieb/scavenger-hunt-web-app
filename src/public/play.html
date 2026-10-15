@@ -11,6 +11,8 @@
     <header class="top">
       <div class="app-bar">
         <span class="app-name">Scavenger Hunt</span>
+        <div class="app-actions">
+        <div id="account"></div>
         <details id="menu" class="menu" hidden>
           <summary aria-label="Menu">Menu</summary>
           <div class="menu-panel">
@@ -23,6 +25,7 @@
             </button>
           </div>
         </details>
+        </div>
       </div>
 
       <!-- Status bar (issue #41): every screen from the lobby on. -->
@@ -282,5 +285,6 @@
     </main>
 
     <script type="module" src="/play.js"></script>
+    <script type="module" src="/account-menu.js"></script>
   </body>
 </html>

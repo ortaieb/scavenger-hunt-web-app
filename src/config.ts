@@ -13,6 +13,9 @@ export interface Config {
   /** How long POST /challenge waits for the game-server before returning 504. */
   gameServerTimeoutMs: number;
   tls?: TlsConfig;
+  /** Clerk's public values for sign-in (see issue #65); unset until the instance exists. */
+  clerkPublishableKey?: string;
+  clerkFrontendApi?: string;
 }
 
 const DEFAULT_PORT = 3000;
@@ -77,5 +80,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, deps: ConfigDep
     gameServerUrl: env.GAME_SERVER_URL ?? DEFAULT_GAME_SERVER_URL,
     gameServerTimeoutMs,
     tls: resolveTls(env, deps),
+    clerkPublishableKey: env.CLERK_PUBLISHABLE_KEY || undefined,
+    clerkFrontendApi: env.CLERK_FRONTEND_API || undefined,
   };
 }

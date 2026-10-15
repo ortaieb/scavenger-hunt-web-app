@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#111318" />
+    <title>Sign in — Scavenger Hunt</title>
+    <link rel="stylesheet" href="/play.css" />
+  </head>
+  <body data-page="sign-in">
+    <header class="top">
+      <div class="app-bar">
+        <span class="app-name">Scavenger Hunt</span>
+        <a class="account-link" href="/play">Back to the game</a>
+      </div>
+    </header>
+
+    <main class="auth">
+      <p id="auth-message" class="message message--warning" role="status" hidden></p>
+      <div id="clerk"></div>
+      <a id="auth-switch" class="auth-switch" href="/sign-up" hidden>No account yet? Sign up</a>
+    </main>
+
+    <script type="module" src="/auth-page.js"></script>
+  </body>
+</html>

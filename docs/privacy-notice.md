@@ -54,6 +54,12 @@ An AI model checks each photo. The organiser reviews a photo when the result is 
 
 Other players never see your photos, and we don't share them with anyone else.
 
+### Your account
+
+If you create an account, we collect your email address, and Clerk records your sign-in activity, such as the device you use and your IP address. We use them only to let you sign in and keep your account secure.
+
+Clerk handles sign-in on our behalf, as our processor. Clerk is a US company certified under the EU-US Data Privacy Framework and its UK Extension, which is the safeguard for sending your data there. [Link to Clerk's privacy policy.]
+
 ### How long we keep it
 
 We keep photos, locations and fingerprints only while the game session is running. They're permanently deleted when the session closes, and in any case no later than [24 hours] after its scheduled end.

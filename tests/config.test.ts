@@ -13,6 +13,16 @@ describe('loadConfig', () => {
     });
   });
 
+  it('reads the Clerk values from the environment, treating empty ones as unset', () => {
+    expect(
+      loadConfig({ CLERK_PUBLISHABLE_KEY: 'pk_test_abc', CLERK_FRONTEND_API: 'quiet-fox-12.clerk.accounts.dev' }),
+    ).toMatchObject({ clerkPublishableKey: 'pk_test_abc', clerkFrontendApi: 'quiet-fox-12.clerk.accounts.dev' });
+
+    const unset = loadConfig({ CLERK_PUBLISHABLE_KEY: '', CLERK_FRONTEND_API: '' });
+    expect(unset.clerkPublishableKey).toBeUndefined();
+    expect(unset.clerkFrontendApi).toBeUndefined();
+  });
+
   it('reads PORT and HOST from the environment', () => {
     expect(loadConfig({ PORT: '8080', HOST: '127.0.0.1' })).toMatchObject({
       port: 8080,

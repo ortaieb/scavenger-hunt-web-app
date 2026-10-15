@@ -2081,6 +2081,49 @@ describe('the /mcp relay', () => {
   });
 });
 
+describe('GET /config', () => {
+  it('returns the Clerk values, uncached', async () => {
+    const app = createApp({
+      ...testConfig,
+      clerkPublishableKey: 'pk_test_abc',
+      clerkFrontendApi: 'quiet-fox-12.clerk.accounts.dev',
+    });
+
+    const response = await request(app).get('/config');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      clerkPublishableKey: 'pk_test_abc',
+      clerkFrontendApi: 'quiet-fox-12.clerk.accounts.dev',
+    });
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+
+  it('returns null for what is not set', async () => {
+    const response = await request(createApp(testConfig)).get('/config');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ clerkPublishableKey: null, clerkFrontendApi: null });
+  });
+});
+
+describe('the sign-in and sign-up pages', () => {
+  it.each(['/sign-in', '/sign-up'])('%s is served, and loads the page script', async (route) => {
+    const response = await request(createApp(testConfig)).get(route);
+
+    expect(response.status).toBe(200);
+    expect(response.type).toBe('text/html');
+    expect(response.text).toContain('/auth-page.js');
+  });
+
+  it.each(['/play', '/moderator', '/designer'])('%s has an account menu', async (route) => {
+    const response = await request(createApp(testConfig)).get(route);
+
+    expect(response.text).toContain('id="account"');
+    expect(response.text).toContain('/account-menu.js');
+  });
+});
+
 describe('unknown routes', () => {
   it('responds with 404', async () => {
     const response = await request(createApp(testConfig)).get('/nope');

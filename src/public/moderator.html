@@ -14,7 +14,10 @@
     <header class="top">
       <div class="app-bar">
         <span class="app-name">Scavenger Hunt · Moderator</span>
-        <button id="sign-out" type="button" class="button-secondary sign-out" hidden>Forget code</button>
+        <div class="app-actions">
+          <div id="account"></div>
+          <button id="sign-out" type="button" class="button-secondary sign-out" hidden>Forget code</button>
+        </div>
       </div>
       <div id="connection" class="message message--warning connection" role="status" hidden>
         <span id="connection-text"></span>
@@ -111,5 +114,6 @@
     </dialog>
 
     <script type="module" src="/moderator.js"></script>
+    <script type="module" src="/account-menu.js"></script>
   </body>
 </html>

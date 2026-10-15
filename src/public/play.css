@@ -749,3 +749,36 @@ button:disabled {
   align-items: center;
   min-height: 44px;
 }
+
+/* Accounts (issue #65): the account menu in the app bar, and the sign-in
+   and sign-up pages that host Clerk's own screens. */
+.app-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.account-link {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 0.25rem;
+}
+
+.account-note {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.auth {
+  display: grid;
+  justify-items: center;
+  gap: 1rem;
+  padding: 1rem 0.75rem;
+}
+
+.auth-switch {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}

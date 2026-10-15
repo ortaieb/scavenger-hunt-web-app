@@ -582,6 +582,32 @@ discovery) come back, uncached, with the body streamed. The relay waits
 `GAME_SERVER_TIMEOUT_MS`, but at least 30 s, since `get_hunt_draft` can wait up to
 20 s; when the game-server can't be reached in time the answer is `502`.
 
+### Accounts: /sign-in, /sign-up and /config
+
+Players, moderators and organisers have accounts, run by
+[Clerk](https://clerk.com) (issue #65). This adds the screens only: no game
+call needs, or sends, a sign-in yet.
+
+- `/sign-in` and `/sign-up` load clerk-js with a script tag from the
+  instance's Frontend API (no bundler), call `Clerk.load()`, then
+  `mountSignIn()` or `mountSignUp()`. After signing in, the player goes back
+  to the `redirect` query parameter if it's a same-origin path (a hunt link
+  with a join code survives the round trip), otherwise to `/play`.
+- `/play`, `/moderator` and `/designer` show an account menu in the app bar
+  (`mountUserButton()`, or a "Sign in" link when signed out). Signing out
+  returns to `/play`.
+- `GET /config` returns `{"clerkPublishableKey", "clerkFrontendApi"}` from
+  `CLERK_PUBLISHABLE_KEY` and `CLERK_FRONTEND_API`, both public values, or
+  `null` for one that isn't set. Without them the pages say sign-in isn't set
+  up and the rest of the app works as today.
+
+In the Clerk Dashboard, the development instance uses email address with an
+email verification code (name, username and phone number off), blocks
+disposable email addresses and subaddresses, has bot protection on, requires
+express consent to legal documents (linking to `/privacy` and the terms of
+use, still to write), and allows the Railway URL and `https://localhost:3000`
+as origins.
+
 ## Scripts
 
 | Script              | Description                                  |
@@ -602,6 +628,8 @@ discovery) come back, uncached, with the body streamed. The relay waits
 | `HOST`                    | `0.0.0.0`                | Interface to bind to                                              |
 | `GAME_SERVER_URL`         | `http://localhost:8000` | Base URL of the game-server; `POST /challenge` relays to `<this>/challenge` |
 | `GAME_SERVER_TIMEOUT_MS`  | `45000`                  | How long `POST /challenge` waits for the game-server before returning `504` |
+| `CLERK_PUBLISHABLE_KEY`   | —                        | Clerk instance's publishable key (public), for sign-up and sign-in; without it the pages say sign-in isn't set up |
+| `CLERK_FRONTEND_API`      | —                        | Clerk instance's Frontend API host, e.g. `verb-noun-00.clerk.accounts.dev` (public) |
 | `TLS_KEY_PATH`            | —                        | Path to a TLS private key; must be set with `TLS_CERT_PATH`       |
 | `TLS_CERT_PATH`           | —                        | Path to a TLS certificate; must be set with `TLS_KEY_PATH`        |
 
@@ -630,6 +658,10 @@ src/
     moderator.js        /moderator's DOM, sign-in, polling, photo and ruling wiring
     designer-logic.js   pure form/progress/failure/review/publish logic for /designer, unit tested directly
     designer.js         /designer's DOM, organiser key, design form, draft polling, review and publish wiring
+    account-logic.js    pure return-path (same-origin only) and Clerk script URL logic, unit tested directly
+    clerk.js            loads clerk-js from the instance's Frontend API, using GET /config
+    account-menu.js     the account menu in the app bar of /play, /moderator and /designer
+    auth-page.js        /sign-in and /sign-up: mounts Clerk's screens, returns to `redirect` afterwards
     api.js              /play's calls to this app's relays, with timeouts (and /challenge's check-in)
     play.js             /play's DOM/permissions/polling wiring
     challenge-logic.js  pure identity/check-in/verdict/hint logic, unit tested directly
