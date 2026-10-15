@@ -24,7 +24,8 @@ const docsDir = path.join(__dirname, '..', 'docs');
 // ones), so the page loads no third-party script.
 const leafletDir = path.dirname(createRequire(import.meta.url).resolve('leaflet/dist/leaflet.js'));
 
-export type AppConfig = Pick<Config, 'gameServerUrl' | 'gameServerTimeoutMs'>;
+export type AppConfig = Pick<Config, 'gameServerUrl' | 'gameServerTimeoutMs'> &
+  Partial<Pick<Config, 'clerkPublishableKey' | 'clerkFrontendApi'>>;
 
 export interface AppDeps {
   /** Injectable for tests; defaults to the global fetch. */
@@ -190,6 +191,25 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // (/designer?draft=<uuid>).
   app.get('/designer', (_req: Request, res: ExpressResponse) => {
     res.sendFile(path.join(publicDir, 'designer.html'));
+  });
+
+  // Sign-up and sign-in (see issue #65): Clerk's screens, loaded by the
+  // page from the instance's Frontend API.
+  app.get('/sign-in', (_req: Request, res: ExpressResponse) => {
+    res.sendFile(path.join(publicDir, 'sign-in.html'));
+  });
+  app.get('/sign-up', (_req: Request, res: ExpressResponse) => {
+    res.sendFile(path.join(publicDir, 'sign-up.html'));
+  });
+
+  // What the pages need to load Clerk. Both values are public (they're in
+  // every page that loads Clerk); null when the instance isn't set up, and
+  // the pages then say so and carry on without accounts.
+  app.get('/config', (_req: Request, res: ExpressResponse) => {
+    res.set('cache-control', 'no-store').json({
+      clerkPublishableKey: config.clerkPublishableKey ?? null,
+      clerkFrontendApi: config.clerkFrontendApi ?? null,
+    });
   });
 
   const privacyPage = markdownPage('privacy-notice.md', 'Your photos and privacy');
