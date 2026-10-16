@@ -36,16 +36,48 @@
   gap: 0.5rem;
 }
 
-.sign-out {
+/* Moderators (issue #67): an email address field, and the ones added on
+   this visit, each with a Remove. */
+.panel input[type='email'] {
+  width: 100%;
+  min-height: 48px;
+  padding: 0.5rem 0.75rem;
+  border: 2px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.moderators {
+  margin: 0.75rem 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.moderators[hidden] {
+  display: none;
+}
+
+.moderator-added-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.moderator-email {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.moderator-added-item button {
   flex: none;
   width: auto;
   min-height: 44px;
   padding: 0 0.9rem;
-  white-space: nowrap;
-}
-
-.sign-out[hidden] {
-  display: none;
 }
 
 /* The badge carries its meaning in words; the colour only repeats it. */

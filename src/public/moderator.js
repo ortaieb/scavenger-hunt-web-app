@@ -1,28 +1,32 @@
 // DOM wiring for the moderator screen at /moderator (issues #44 and #55).
 // Everything it decides lives in moderator-logic.js; this file reads and
-// writes the DOM, keeps the moderator code for this tab, calls this app's
-// moderator relays, and polls the overview and the review queue.
+// writes the DOM, calls this app's moderator relays, and polls the overview
+// and the review queue.
 //
-// The moderator code is typed once and kept in sessionStorage only (so it
-// goes when the tab closes), and sent only as `Authorization: Bearer
-// <code>`: never in a URL, never in storage that outlives the tab, never
-// logged.
+// Moderators sign in with their account (issue #67): each call carries the
+// Clerk session token (authorised-fetch.js), as `Authorization: Bearer
+// <token>`. Nothing is typed, and nothing about the sign-in is stored here.
 //
 // Photos need that header too, so an <img> can't load them from the relay
 // itself: each is fetched with the header and shown through an object URL,
 // revoked when its photo leaves the screen. Photos, notes and the
 // referee's reasons are kept in memory only, never stored or logged.
 
+import { accountHref, signInPrompt } from './account-logic.js';
+import { accountStatus, authorisedFetch } from './authorised-fetch.js';
 import {
   actionsFor,
+  addedModeratorPid,
   askedFor,
   blockedLine,
+  checkModeratorEmail,
   checkpointLabel,
   CONFIRM_START,
   confirmFinishText,
   finishBanner,
   lastCompletedLine,
   moderatorError,
+  moderatorsError,
   newestBlocked,
   NOTE_MAX_LENGTH,
   otherChecksLine,
@@ -49,13 +53,14 @@ const COUNTDOWN_TICK_MS = 1000;
 const el = (id) => document.getElementById(id);
 
 const session = readSessionId(new URLSearchParams(window.location.search));
-const codeStorageKey = `scavenger-hunt.moderatorCode.${session}`;
 
 const signInSection = el('sign-in');
-const signInForm = el('sign-in-form');
-const codeInput = el('moderator-code');
-const signInBtn = el('sign-in-button');
-const signOutBtn = el('sign-out');
+const signInText = el('sign-in-text');
+const signInLink = el('sign-in-link');
+const moderatorForm = el('moderator-form');
+const emailInput = el('moderator-email');
+const addModeratorBtn = el('moderator-add');
+const addedModeratorsEl = el('moderator-added');
 const dashboardEl = el('dashboard');
 const startBtn = el('start-button');
 const finishBtn = el('finish-button');
@@ -105,37 +110,16 @@ const decidedRows = new Map();
 /** Submissions whose ruling is being saved. */
 const saving = new Set();
 
-// --- the code, for this tab only --------------------------------------------
-// sessionStorage can throw (private browsing, blocked storage): then the
-// code lives in memory for this page only.
+// --- signed in ---------------------------------------------------------------
+// Set once the visitor is known to be signed in, and cleared when the
+// game-server turns them away. Polling only runs while it's set.
 
-let codeInMemory = null;
-
-function loadCode() {
-  try {
-    return sessionStorage.getItem(codeStorageKey) ?? codeInMemory;
-  } catch {
-    return codeInMemory;
-  }
-}
-
-function storeCode(code) {
-  codeInMemory = code;
-  try {
-    if (code === null) {
-      sessionStorage.removeItem(codeStorageKey);
-    } else {
-      sessionStorage.setItem(codeStorageKey, code);
-    }
-  } catch {
-    // Kept in memory only; see above.
-  }
-}
+let signedIn = false;
 
 // --- calls to this app's moderator relays ------------------------------------
 
 /**
- * Calls one of this app's moderator relays with the code, reading the
+ * Calls one of this app's moderator relays with the account's token, reading the
  * response with `read` within the same timeout.
  *
  * @template T
@@ -148,9 +132,8 @@ async function fetchRelay(url, init, read) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(url, {
+    const response = await authorisedFetch(url, {
       ...init,
-      headers: { ...init.headers, authorization: `Bearer ${loadCode() ?? ''}` },
       cache: 'no-store',
       signal: controller.signal,
     });
@@ -210,7 +193,7 @@ function postRuling(submission, ruling, note) {
 }
 
 /**
- * Fetches a photo through its relay, with the code.
+ * Fetches a photo through its relay, with the account's token.
  *
  * @param {string} url
  * @returns {Promise<{ status: number, blob: Blob | null }>}
@@ -234,20 +217,33 @@ function setConnection(message) {
   el('connection').hidden = !message;
 }
 
-function showSignIn(message) {
+/**
+ * Takes everything off the screen and says why: not signed in (with a link
+ * to sign in), or signed in but not allowed (just the message).
+ */
+function showGate(message, link) {
   stopPolling();
   overview = null;
   review = null;
   clearCards();
+  addedModerators = [];
+  renderAddedModerators();
   if (viewer.open) {
     viewer.close();
   }
   dashboardEl.hidden = true;
-  signOutBtn.hidden = true;
   signInSection.hidden = false;
-  showMessage('sign-in-error', message);
-  codeInput.value = '';
-  codeInput.focus();
+  signInText.textContent = link ? message : '';
+  signInText.hidden = !link;
+  showMessage('sign-in-error', link ? '' : message);
+  signInLink.href = accountHref('sign-in', `${window.location.pathname}${window.location.search}`);
+  signInLink.hidden = !link;
+}
+
+/** A 401 or 403 from a relay: this account can't go on, so stop and say so. */
+function endAccess(error) {
+  signedIn = false;
+  showGate(error.message, false);
 }
 
 function serverNow() {
@@ -260,7 +256,6 @@ function render() {
   }
   signInSection.hidden = true;
   dashboardEl.hidden = false;
-  signOutBtn.hidden = false;
 
   renderPhase();
 
@@ -448,9 +443,8 @@ async function loadPhoto(card, photo) {
     // on its way.
     return;
   }
-  if (status === 401) {
-    storeCode(null);
-    showSignIn(moderatorError(status, null).message);
+  if (status === 401 || status === 403) {
+    endAccess(moderatorError(status, null));
     return;
   }
   if (!blob) {
@@ -615,9 +609,8 @@ async function decide(card, ruling) {
   saving.delete(card.submission);
   showSaving(card);
   const error = moderatorError(status, body);
-  if (error.askForCode) {
-    storeCode(null);
-    showSignIn(error.message);
+  if (error.signInAgain || error.forbidden) {
+    endAccess(error);
     return;
   }
   if (card.error && !card.gone) {
@@ -852,9 +845,8 @@ async function refresh() {
       review = /** @type {import('./moderator-logic.js').Review} */ (reviewed.body);
     }
     const reviewError = reviewOk ? null : moderatorError(reviewed.status, reviewed.body);
-    if (reviewError?.askForCode) {
-      storeCode(null);
-      showSignIn(reviewError.message);
+    if (reviewError?.signInAgain || reviewError?.forbidden) {
+      endAccess(reviewError);
       return;
     }
     // Keep showing the last review queue; say what's wrong and keep trying.
@@ -865,9 +857,8 @@ async function refresh() {
   }
 
   const error = moderatorError(status, body);
-  if (error.askForCode) {
-    storeCode(null);
-    showSignIn(error.message);
+  if (error.signInAgain || error.forbidden) {
+    endAccess(error);
     return;
   }
   if (overview) {
@@ -877,8 +868,7 @@ async function refresh() {
     return;
   }
   // Nothing to show yet (e.g. right after signing in).
-  signInSection.hidden = false;
-  showMessage('sign-in-error', error.message);
+  showGate(error.message, false);
   if (error.offline) {
     schedulePoll();
   }
@@ -887,7 +877,7 @@ async function refresh() {
 function schedulePoll() {
   clearTimeout(pollTimer);
   pollTimer = null;
-  if (document.visibilityState === 'visible' && loadCode()) {
+  if (document.visibilityState === 'visible' && signedIn) {
     pollTimer = setTimeout(() => void refresh(), OVERVIEW_POLL_MS);
   }
   if (tickTimer === null && document.visibilityState === 'visible') {
@@ -905,7 +895,7 @@ function stopPolling() {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    if (loadCode()) {
+    if (signedIn) {
       void refresh();
     }
   } else {
@@ -914,29 +904,88 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-// --- sign in -----------------------------------------------------------------
+// --- moderators ---------------------------------------------------------------
+// Added by email address, and removed by the person id the game-server
+// answered with. There's no list to read back, so the ones added on this
+// page are kept here (in memory only: an email address is personal data).
 
-signInForm.addEventListener('submit', async (event) => {
+/** @type {{ email: string, pid: string }[]} */
+let addedModerators = [];
+
+function renderAddedModerators() {
+  addedModeratorsEl.hidden = addedModerators.length === 0;
+  addedModeratorsEl.replaceChildren(
+    ...addedModerators.map(({ email, pid }) => {
+      const item = make('li', 'moderator-added-item');
+      const remove = /** @type {HTMLButtonElement} */ (make('button', 'button-secondary', 'Remove'));
+      remove.type = 'button';
+      remove.setAttribute('aria-label', `Remove ${email}`);
+      remove.addEventListener('click', () => void removeModerator(pid, remove));
+      item.append(make('span', 'moderator-email', email), remove);
+      return item;
+    }),
+  );
+}
+
+moderatorForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  const code = codeInput.value.trim();
-  if (!code) {
-    showMessage('sign-in-error', 'Enter the moderator code.');
+  const { email, problem } = checkModeratorEmail(emailInput.value);
+  if (problem) {
+    showMessage('moderator-error', problem);
     return;
   }
-  storeCode(code);
-  codeInput.value = '';
-  showMessage('sign-in-error', '');
-  signInBtn.disabled = true;
-  signInBtn.textContent = 'Signing in…';
-  await refresh();
-  signInBtn.disabled = false;
-  signInBtn.textContent = 'Sign in';
+  showMessage('moderator-error', '');
+  addModeratorBtn.disabled = true;
+  addModeratorBtn.textContent = 'Adding…';
+  const { status, body } = await callRelay('/moderator/moderators', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session, email }),
+  });
+  addModeratorBtn.disabled = false;
+  addModeratorBtn.textContent = 'Add moderator';
+
+  if (status === 200 || status === 201) {
+    const pid = addedModeratorPid(body);
+    if (!pid) {
+      showMessage('moderator-error', 'Something went wrong. Please try again.');
+      return;
+    }
+    if (!addedModerators.some((moderator) => moderator.pid === pid)) {
+      addedModerators.push({ email, pid });
+    }
+    emailInput.value = '';
+    renderAddedModerators();
+    return;
+  }
+  const error = moderatorsError(status, body, 'add');
+  if (error.signInAgain) {
+    endAccess(error);
+    return;
+  }
+  showMessage('moderator-error', error.message);
 });
 
-signOutBtn.addEventListener('click', () => {
-  storeCode(null);
-  showSignIn('');
-});
+async function removeModerator(pid, button) {
+  showMessage('moderator-error', '');
+  button.disabled = true;
+  const { status, body } = await callRelay(`/moderator/moderators?${new URLSearchParams({ session, pid })}`, {
+    method: 'DELETE',
+  });
+  // 204 when removed; a 404 means they already aren't one, which is the same.
+  if (status === 204 || status === 200 || status === 404) {
+    addedModerators = addedModerators.filter((moderator) => moderator.pid !== pid);
+    renderAddedModerators();
+    return;
+  }
+  button.disabled = false;
+  const error = moderatorsError(status, body, 'remove');
+  if (error.signInAgain) {
+    endAccess(error);
+    return;
+  }
+  showMessage('moderator-error', error.message);
+}
 
 // --- start and finish ----------------------------------------------------------
 
@@ -967,9 +1016,8 @@ async function runAction(action) {
   // 201 when the phase changed, 200 on a repeat: either way it's done.
   if (status !== 200 && status !== 201) {
     const error = moderatorError(status, body);
-    if (error.askForCode) {
-      storeCode(null);
-      showSignIn(error.message);
+    if (error.signInAgain || error.forbidden) {
+      endAccess(error);
       return;
     }
     showMessage('action-error', error.message);
@@ -992,10 +1040,19 @@ finishBtn.addEventListener('click', async () => {
 
 // --- start -------------------------------------------------------------------
 
-if (!session) {
-  el('no-session').hidden = false;
-} else if (loadCode()) {
+async function start() {
+  if (!session) {
+    el('no-session').hidden = false;
+    return;
+  }
+  const status = await accountStatus();
+  if (status !== 'signed-in') {
+    const { message, showLink } = signInPrompt(status, 'moderate this session');
+    showGate(message, showLink);
+    return;
+  }
+  signedIn = true;
   void refresh();
-} else {
-  showSignIn('');
 }
+
+void start();

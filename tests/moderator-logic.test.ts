@@ -12,7 +12,10 @@ import {
   confirmFinishText,
   finishBanner,
   lastCompletedLine,
+  addedModeratorPid,
+  checkModeratorEmail,
   moderatorError,
+  moderatorsError,
   newestBlocked,
   NOTE_MAX_LENGTH,
   otherChecksLine,
@@ -250,10 +253,20 @@ describe('blocked attempts', () => {
 });
 
 describe('moderatorError', () => {
-  it('asks for the code again on a 401', () => {
-    expect(moderatorError(401, { detail: 'moderator code required', code: 'moderator_unauthorised' })).toEqual({
-      message: "That code isn't right for this session.",
-      askForCode: true,
+  it('asks to sign in again on a 401', () => {
+    expect(moderatorError(401, { detail: 'unauthorised', code: 'unauthorised' })).toEqual({
+      message: "Your sign-in wasn't accepted. Sign out from the account menu and sign in again.",
+      signInAgain: true,
+      forbidden: false,
+      offline: false,
+    });
+  });
+
+  it("says the account isn't a moderator of this hunt on a 403", () => {
+    expect(moderatorError(403, { detail: 'forbidden', code: 'forbidden' })).toEqual({
+      message: "This account isn't a moderator of this hunt.",
+      signInAgain: false,
+      forbidden: true,
       offline: false,
     });
   });
@@ -265,7 +278,7 @@ describe('moderatorError', () => {
     [400, { error: 'session must be a valid UUID' }, 'The link has no valid session id.'],
     [500, null, 'Something went wrong (error 500).'],
   ])('%i → %s', (status, body, message) => {
-    expect(moderatorError(status, body)).toEqual({ message, askForCode: false, offline: false });
+    expect(moderatorError(status, body)).toEqual({ message, signInAgain: false, forbidden: false, offline: false });
   });
 
   it.each([0, 502, 503, 504])('treats %i as a lost connection', (status) => {
@@ -618,4 +631,56 @@ describe('finishing with photos in review', () => {
       });
     });
   });
+});
+
+describe('checkModeratorEmail', () => {
+  it('trims a plausible address', () => {
+    expect(checkModeratorEmail('  bob@example.com ')).toEqual({ email: 'bob@example.com', problem: '' });
+  });
+
+  it.each(['', '   ', 'bob', 'bob@', '@example.com', 'bob @example.com'])('rejects %j', (value) => {
+    expect(checkModeratorEmail(value).problem).toBe('Enter the email address they signed up with.');
+  });
+});
+
+describe('moderatorsError', () => {
+  it('turns a 404 on add into "ask them to sign up first"', () => {
+    expect(moderatorsError(404, { code: 'no_account' }, 'add').message).toBe(
+      'No account with that email address: ask them to sign up first.',
+    );
+  });
+
+  it('says a 404 on remove means they already are not a moderator', () => {
+    expect(moderatorsError(404, { code: 'not_a_moderator' }, 'remove').message).toBe(
+      "They aren't a moderator of this hunt any more.",
+    );
+  });
+
+  it.each([
+    [409, "That account isn't an organiser, so it can't moderate. Ask an admin to make them one."],
+    [403, "This account can't change this hunt's moderators."],
+    [422, 'Enter the email address they signed up with.'],
+    [400, 'Enter the email address they signed up with.'],
+  ])('%i → %s', (status, message) => {
+    expect(moderatorsError(status, null, 'add').message).toBe(message);
+  });
+
+  it('falls back to the screen-wide errors', () => {
+    expect(moderatorsError(401, null, 'add')).toMatchObject({ signInAgain: true });
+    expect(moderatorsError(0, null, 'remove')).toMatchObject({ offline: true });
+    expect(moderatorsError(500, null, 'add').message).toBe('Something went wrong (error 500).');
+  });
+});
+
+describe('addedModeratorPid', () => {
+  it('takes the pid from the answer', () => {
+    expect(addedModeratorPid({ session: 's', pid: 'p_8f3-A' })).toBe('p_8f3-A');
+  });
+
+  it.each([null, undefined, 'x', {}, { pid: 5 }, { pid: '' }, { pid: 'a/b' }, { pid: 'x'.repeat(101) }])(
+    'is null for %j',
+    (body) => {
+      expect(addedModeratorPid(body)).toBeNull();
+    },
+  );
 });
