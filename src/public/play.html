@@ -18,6 +18,7 @@
           <div class="menu-panel">
             <p id="menu-team" class="menu-team"></p>
             <a href="/how-to-play">How to play</a>
+            <a href="/profile">Your profile</a>
             <a href="/privacy">Your photos and privacy</a>
             <button id="leave" type="button" class="button-secondary">Leave this game</button>
             <button id="leave-confirm" type="button" class="button-danger" hidden>
@@ -115,6 +116,12 @@
             </span>
           </label>
 
+          <!-- Optional and separate (issue #68): never ticked for the player. -->
+          <label class="consent">
+            <input id="upcoming-hunts" type="checkbox" />
+            <span>Email me about upcoming hunts</span>
+          </label>
+
           <p id="join-error" class="message message--error" role="alert" hidden></p>
           <p class="secondary-link"><a href="/how-to-play">How to play</a></p>
 
@@ -178,6 +185,8 @@
         <dl class="details screen-body">
           <dt>Team</dt>
           <dd id="lobby-team"></dd>
+          <dt hidden>Players</dt>
+          <dd id="lobby-members" hidden></dd>
           <dt>Game</dt>
           <dd id="lobby-session"></dd>
           <dt>Area</dt>

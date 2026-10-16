@@ -60,6 +60,12 @@ If you create an account, we collect your email address, and Clerk records your 
 
 Clerk handles sign-in on our behalf, as our processor. Clerk is a US company certified under the EU-US Data Privacy Framework and its UK Extension, which is the safeguard for sending your data there. [Link to Clerk's privacy policy.]
 
+### Your profile and upcoming hunts
+
+If you have an account, we keep a profile for you: your name (if you give one), your home area (a postcode district such as W4, never a full postcode), your language, and the hunts you've played with your team, date, checkpoints and points. We use it to recognise you when you come back, to show you your past hunts and to show your teammates your name. Your teammates never see your email address.
+
+If you tick **Email me about upcoming hunts**, we may email you about new hunts. The box is never ticked for you. You can tick it when you join a hunt or on your profile page (/profile), and untick it there at any time: it takes one tap and takes effect straight away. We keep a record of when you agreed, when you withdrew and the exact wording you agreed to.
+
 ### How long we keep it
 
 We keep photos, locations and fingerprints only while the game session is running. They're permanently deleted when the session closes, and in any case no later than [24 hours] after its scheduled end.

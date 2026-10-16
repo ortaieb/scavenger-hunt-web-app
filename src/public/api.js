@@ -53,16 +53,32 @@ function parseJsonSafely(text) {
  * `consent` is only ever sent as the player's own tick — callers must not
  * call this until the box is ticked, and this never defaults it.
  *
+ * `upcomingHunts` likewise: sent as `true` only when its own, separate box
+ * was ticked, and left out otherwise.
+ *
  * @param {string} code
  * @param {true} consent
+ * @param {boolean} [upcomingHunts]
  * @returns {Promise<ApiResult>}
  */
-export function join(code, consent) {
+export function join(code, consent, upcomingHunts = false) {
   return callRelay('/join', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ code, consent }),
+    body: JSON.stringify(upcomingHunts ? { code, consent, upcomingHunts: true } : { code, consent }),
   });
+}
+
+/**
+ * The names of the player's teammates, for the team's own screens.
+ *
+ * @param {string} session
+ * @param {string} participant
+ * @returns {Promise<ApiResult>}
+ */
+export function fetchMembers(session, participant) {
+  const query = new URLSearchParams({ session, participant });
+  return callRelay(`/members?${query}`, { cache: 'no-store' });
 }
 
 /**

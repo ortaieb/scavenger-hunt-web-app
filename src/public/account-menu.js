@@ -27,7 +27,11 @@ async function mountAccountMenu() {
   }
   if (clerk.user) {
     const button = document.createElement('div');
-    slot.replaceChildren(button);
+    const profile = document.createElement('a');
+    profile.className = 'account-link';
+    profile.textContent = 'Profile';
+    profile.href = '/profile';
+    slot.replaceChildren(profile, button);
     clerk.mountUserButton(button, { afterSignOutUrl: DEFAULT_RETURN_PATH });
   } else {
     showSignInLink();
