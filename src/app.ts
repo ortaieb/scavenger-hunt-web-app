@@ -258,6 +258,11 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     res.sendFile(path.join(publicDir, 'sign-up.html'));
   });
 
+  // The player's profile (see issue #68).
+  app.get('/profile', (_req: Request, res: ExpressResponse) => {
+    res.sendFile(path.join(publicDir, 'profile.html'));
+  });
+
   // What the pages need to load Clerk. Both values are public (they're in
   // every page that loads Clerk); null when the instance isn't set up, and
   // the pages then say so and carry on without accounts.
@@ -549,7 +554,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
       body,
       photo = false,
       noStore = photo,
-    }: { method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'; body?: unknown; photo?: boolean; noStore?: boolean } = {},
+    }: { method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; body?: unknown; photo?: boolean; noStore?: boolean } = {},
   ): Promise<void> {
     const authorization = req.get('authorization');
     const headers: Record<string, string> = authorization === undefined ? {} : { authorization };
@@ -600,6 +605,44 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // Needs the token and nothing else; it answers `{ "pid" }`.
   app.post('/me/provision', ...accountAuth, async (req: Request, res: ExpressResponse) => {
     await relayAuthorised(req, res, '/me/provision', { method: 'POST', noStore: true });
+  });
+
+  // The player's profile (see issue #68): their name, home area, language,
+  // the upcoming-hunts consent and their hunts. Personal data, so relayed
+  // with the token and never cached or logged. The body goes upstream as
+  // sent: the game-server alone checks it (422 with a code per field), and
+  // `granted` is never added or defaulted here, as with `consent` on /join.
+  app.get('/me', ...accountAuth, async (req: Request, res: ExpressResponse) => {
+    await relayAuthorised(req, res, '/me', { noStore: true });
+  });
+  app.patch('/me', ...accountAuth, express.json(), async (req: Request, res: ExpressResponse) => {
+    await relayAuthorised(req, res, '/me', { method: 'PATCH', body: req.body ?? {}, noStore: true });
+  });
+  app.put('/me/consents/upcoming-hunts', ...accountAuth, express.json(), async (req: Request, res: ExpressResponse) => {
+    await relayAuthorised(req, res, '/me/consents/upcoming-hunts', {
+      method: 'PUT',
+      body: req.body ?? {},
+      noStore: true,
+    });
+  });
+  app.get('/me/hunts', ...accountAuth, async (req: Request, res: ExpressResponse) => {
+    await relayAuthorised(req, res, '/me/hunts', { noStore: true });
+  });
+
+  // A team's members' display names, for the team's own screens (never email
+  // addresses; the game-server answers 404 to anyone outside the team).
+  app.get('/members', ...accountAuth, async (req: Request, res: ExpressResponse) => {
+    const { session, participant } = req.query as Record<string, string | undefined>;
+    if (!isValidUuid(session) || !isValidUuid(participant)) {
+      res.status(400).json({ error: 'session and participant must be valid UUIDs' });
+      return;
+    }
+    await relayAuthorised(
+      req,
+      res,
+      `/sessions/${encodeURIComponent(session)}/participants/${encodeURIComponent(participant)}/members`,
+      { noStore: true },
+    );
   });
 
   // Clerk's webhooks (see issue #66), passed to the game-server as they came:

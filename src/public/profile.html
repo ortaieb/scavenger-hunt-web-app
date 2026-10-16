@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#111318" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Your profile — Scavenger Hunt</title>
+    <link rel="stylesheet" href="/play.css" />
+    <link rel="stylesheet" href="/profile.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="app-bar">
+        <span class="app-name">Scavenger Hunt</span>
+        <div class="app-actions">
+          <div id="account"></div>
+          <a class="account-link" href="/play">Back to the game</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="screen-host profile">
+      <p id="profile-message" class="message message--warning" role="status" hidden>
+        <span id="profile-message-text"></span>
+        <a id="profile-sign-in" href="/sign-in" hidden>Sign in</a>
+      </p>
+
+      <div id="profile-body" hidden>
+        <h1>Your profile</h1>
+
+        <form id="profile-form" novalidate>
+          <label for="display-name" class="field-label">Name</label>
+          <input id="display-name" type="text" maxlength="40" autocomplete="nickname" />
+          <p class="hint">Your teammates see this. Leave it empty if you'd rather not.</p>
+
+          <label for="home-area" class="field-label">Home area</label>
+          <input id="home-area" type="text" maxlength="5" autocomplete="off" autocapitalize="characters" placeholder="W4" />
+          <p class="hint">A postcode district such as W4 is enough. Please don't enter a full postcode.</p>
+
+          <label for="locale" class="field-label">Language</label>
+          <select id="locale">
+            <option value="en-GB">English (UK)</option>
+          </select>
+
+          <p id="save-message" class="message message--note" role="status" hidden></p>
+          <div class="primary-action">
+            <button id="save" type="submit">Save</button>
+          </div>
+        </form>
+
+        <h2>Emails</h2>
+        <label class="consent">
+          <input id="upcoming-hunts" type="checkbox" />
+          <span id="upcoming-hunts-wording"></span>
+        </label>
+        <p id="consent-status" class="hint" role="status"></p>
+        <p class="hint"><a href="/privacy">What we keep and why</a></p>
+
+        <h2>Your hunts</h2>
+        <p id="hunts-empty" class="hint" hidden>You haven't played a hunt yet.</p>
+        <ul id="hunts" class="hunts"></ul>
+      </div>
+    </main>
+
+    <script type="module" src="/profile.js"></script>
+    <script type="module" src="/account-menu.js"></script>
+  </body>
+</html>

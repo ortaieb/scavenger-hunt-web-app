@@ -12,6 +12,7 @@ import * as api from './api.js';
 import { mustSignInToJoin } from './authorised-fetch.js';
 import { checkProximity, createCamera, deviceHasMultipleCameras, getPosition, loadFacingMode, storeFacingMode } from './camera.js';
 import { describeAccuracyHint } from './challenge-logic.js';
+import { readMemberNames } from './profile-logic.js';
 import {
   challengeErrorFor,
   checkpointAfterArrive,
@@ -75,6 +76,7 @@ const leaveConfirmBtn = el('leave-confirm');
 const joinForm = el('join-form');
 const teamCodeInput = el('team-code');
 const consentInput = el('consent');
+const upcomingHuntsInput = el('upcoming-hunts');
 const joinBtn = el('join-button');
 const joinSignInEl = el('join-sign-in');
 const joinSignInLink = el('join-sign-in-link');
@@ -336,6 +338,26 @@ function renderLobby() {
   el('lobby-session').textContent = session.name ?? '';
   el('lobby-area').textContent = session.location ?? '';
   el('lobby-start').textContent = formatPlannedTime(session['start-time']) || 'Not set';
+  void showMembers();
+}
+
+// Teammates' display names (issue #68). Optional: if they can't be had, the
+// row stays empty and the lobby is as it was.
+let membersFor = null;
+async function showMembers() {
+  const row = el('lobby-members');
+  const identity = appState.identity;
+  // The lobby is drawn on every poll; ask once per team.
+  if (!identity || membersFor === identity.participant) {
+    return;
+  }
+  membersFor = identity.participant;
+  const { status, body } = await api.fetchMembers(identity.session.id, identity.participant);
+  if (status !== 200) {
+    membersFor = null;
+  }
+  row.textContent = status === 200 ? readMemberNames(body).join(', ') : '';
+  row.previousElementSibling.hidden = row.hidden = row.textContent === '';
 }
 
 // --- join ------------------------------------------------------------------
@@ -387,7 +409,7 @@ joinForm.addEventListener('submit', async (event) => {
   joinBtn.textContent = 'Joining…';
   showJoinError('');
 
-  const { status, body } = await api.join(code, true);
+  const { status, body } = await api.join(code, true, upcomingHuntsInput.checked);
 
   joinBtn.textContent = 'Join';
   updateJoinButton();
@@ -408,6 +430,7 @@ joinForm.addEventListener('submit', async (event) => {
   store(IDENTITY_STORAGE_KEY, identity);
   teamCodeInput.value = '';
   consentInput.checked = false;
+  upcomingHuntsInput.checked = false;
   updateJoinButton();
 
   render();

@@ -1,0 +1,55 @@
+/* The profile screen (issue #68), on top of play.css. */
+.profile input[type='text'] {
+  font-size: 1.1rem;
+  font-family: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.profile select {
+  width: 100%;
+  min-height: 52px;
+  padding: 0.6rem 0.8rem;
+  border: 2px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1.1rem;
+}
+
+.profile .field-label {
+  margin-top: 1rem;
+}
+
+.profile .hint {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.profile .primary-action {
+  margin-top: 1.25rem;
+}
+
+.hunts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.hunts li {
+  padding: 0.75rem;
+  border: 2px solid var(--border);
+  border-radius: 0.75rem;
+}
+
+.hunts .hunt-name {
+  font-weight: 600;
+}
+
+.hunts .hunt-meta {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
