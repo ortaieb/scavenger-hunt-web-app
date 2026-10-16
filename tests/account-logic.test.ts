@@ -4,6 +4,7 @@ import {
   clerkConfigured,
   clerkScriptUrl,
   DEFAULT_RETURN_PATH,
+  joinNeedsSignIn,
   readReturnPath,
   returnPath,
 } from '../src/public/account-logic.js';
@@ -95,5 +96,15 @@ describe('clerkConfigured', () => {
     expect(clerkConfigured({ ...both, clerkFrontendApi: null })).toBe(false);
     expect(clerkConfigured({ clerkPublishableKey: null, clerkFrontendApi: null })).toBe(false);
     expect(clerkConfigured(undefined)).toBe(false);
+  });
+});
+
+describe('joinNeedsSignIn', () => {
+  it('asks a signed-out player to sign in only when the app requires it', () => {
+    expect(joinNeedsSignIn({ requireSignIn: true }, false)).toBe(true);
+    expect(joinNeedsSignIn({ requireSignIn: true }, true)).toBe(false);
+    expect(joinNeedsSignIn({ requireSignIn: false }, false)).toBe(false);
+    expect(joinNeedsSignIn({}, false)).toBe(false);
+    expect(joinNeedsSignIn(undefined, false)).toBe(false);
   });
 });

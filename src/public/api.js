@@ -3,6 +3,8 @@
 // signal never leaves the page waiting forever. The /challenge developer
 // page uses arrive() too, for its "I'm here".
 
+import { authorisedFetch } from './authorised-fetch.js';
+
 const REQUEST_TIMEOUT_MS = 15000;
 // The referee checks a photo before /challenge answers, and this app's
 // relay allows the game-server 45 s (GAME_SERVER_TIMEOUT_MS) for it.
@@ -28,7 +30,7 @@ async function callRelay(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
+    const response = await authorisedFetch(url, { ...init, signal: controller.signal });
     const receivedAt = Date.now();
     const text = await response.text();
     return { status: response.status, body: parseJsonSafely(text), text, receivedAt };

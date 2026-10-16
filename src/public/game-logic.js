@@ -237,6 +237,10 @@ export function screenForError(status, body) {
       return outcome(null, '', { reload: true });
     case 'checkpoint_closed':
       return outcome('clue', "This checkpoint isn't open yet. Check back soon.", { reload: true });
+    case 'sign_in_required':
+      // Signed-out players are sent to sign in before they see this; it's for
+      // a sign-in the server didn't accept.
+      return outcome(null, 'Please sign in again to continue.');
   }
 
   if (status === 404) {

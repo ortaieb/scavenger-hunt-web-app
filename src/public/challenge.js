@@ -3,6 +3,7 @@
 // the call to the /arrive relay, in api.js.
 
 import { arrive } from './api.js';
+import { authorisedFetch } from './authorised-fetch.js';
 import {
   isValidUuid,
   readCheckpointFromQuery,
@@ -398,7 +399,7 @@ async function submitCapture() {
 
     // Posted to this app's own /challenge, same-origin — not the game-server
     // directly, which the browser can't safely reach (see issue #7).
-    const response = await fetch('/challenge', { method: 'POST', body: form });
+    const response = await authorisedFetch('/challenge', { method: 'POST', body: form });
     const bodyText = await response.text().catch(() => '');
 
     // describeVerdict only reports what the game-server already decided —

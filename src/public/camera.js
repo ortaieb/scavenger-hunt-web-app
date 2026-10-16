@@ -4,6 +4,7 @@
 // picker — that keeps the capture entirely in-app and never offers a photo
 // gallery as an alternative source.
 
+import { authorisedFetch } from './authorised-fetch.js';
 import { buildVideoConstraints, describeProximityWarning, hasMultipleCameras, readFacingMode } from './challenge-logic.js';
 
 const FACING_MODE_STORAGE_KEY = 'scavenger-hunt.facingMode';
@@ -186,7 +187,7 @@ export async function checkProximity(identity, position) {
 
     let response;
     try {
-      response = await fetch('/checkpoint/proximity', {
+      response = await authorisedFetch('/checkpoint/proximity', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
