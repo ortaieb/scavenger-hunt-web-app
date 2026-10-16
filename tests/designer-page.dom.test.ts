@@ -6,19 +6,38 @@
 // the same Leaflet build /vendor/leaflet/ serves. The relays themselves are
 // tested in app.test.ts. Type-checked with the DOM's types by
 // tsconfig.dom.json.
+//
+// The page signs in with an account (issue #67): authorised-fetch.js, which
+// loads Clerk and adds the session token, is replaced by a stand-in that
+// sends a token while the test's visitor is signed in. Its own logic is
+// tested in relay-auth.test.ts.
 
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const KEY = 'organiser-key-of-at-least-24-chars';
-const KEY_STORAGE_KEY = 'scavenger-hunt.organiserKey';
+const TOKEN = 'clerk-session-token';
 const DRAFT = '5b0c7a1e-1111-4111-8111-111111111111';
 const FAILED = '5b0c7a1e-2222-4222-8222-222222222222';
 const RUNNING = '5b0c7a1e-3333-4333-8333-333333333333';
 const SESSION = '33333333-3333-4333-8333-333333333333';
 const MODERATOR_CODE = 'MOD-7Q2KX9P4H3MN';
+
+// What the stand-in for authorised-fetch.js says about the visitor.
+const account = vi.hoisted(() => {
+  const state: { status: string; token: string } = { status: 'signed-in', token: 'clerk-session-token' };
+  return state;
+});
+
+vi.mock('../src/public/authorised-fetch.js', () => ({
+  accountStatus: () => Promise.resolve(account.status),
+  authorisedFetch: (url: string, init: RequestInit = {}) =>
+    fetch(url, {
+      ...init,
+      headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${account.token}` },
+    }),
+}));
 
 /** The parts of Leaflet the tests watch. */
 interface Leaflet {
@@ -95,7 +114,8 @@ function stubGameServer() {
   const drafts = new Map<string, Json>();
   const publications = new Map<string, Json>();
   const state = {
-    key: KEY,
+    token: TOKEN,
+    forbidden: false,
     busy: false,
     disabled: false,
     offline: false,
@@ -119,8 +139,11 @@ function stubGameServer() {
     if (state.offline) {
       return Promise.reject(new TypeError('Failed to fetch'));
     }
-    if (call.authorization !== `Bearer ${state.key}`) {
-      return Promise.resolve(json(401, { detail: 'organiser key required', code: 'organiser_unauthorised' }));
+    if (call.authorization !== `Bearer ${state.token}`) {
+      return Promise.resolve(json(401, { detail: 'unauthorised', code: 'unauthorised' }));
+    }
+    if (state.forbidden) {
+      return Promise.resolve(json(403, { detail: 'forbidden', code: 'forbidden' }));
     }
     if (call.method === 'POST' && url === '/designer/drafts') {
       if (state.disabled) {
@@ -414,7 +437,6 @@ function addReadyDraft(id = DRAFT, checkpoints = STUB_CHECKPOINTS) {
 
 async function openReadyDraft(checkpoints = STUB_CHECKPOINTS) {
   addReadyDraft(DRAFT, checkpoints);
-  sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
   await loadPage(`/designer?draft=${DRAFT}`);
 }
 
@@ -455,6 +477,8 @@ let logged: ReturnType<typeof vi.spyOn>[];
 beforeEach(() => {
   setLeaflet(leaflet);
   vi.useFakeTimers({ now: Date.parse('2026-10-08T09:00:00Z') });
+  account.status = 'signed-in';
+  account.token = TOKEN;
   server = stubGameServer();
   vi.stubGlobal('fetch', server.fetch);
   sessionStorage = new MemoryStorage();
@@ -481,7 +505,6 @@ afterEach(() => {
 
 describe('a design runs to the end', () => {
   it('posts the right body, then polls the draft, shows the progress steps and stops polling at ready', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage();
 
     expect(visible('workspace')).toBe(true);
@@ -496,7 +519,7 @@ describe('a design runs to the end', () => {
       {
         method: 'POST',
         url: '/designer/drafts',
-        authorization: `Bearer ${KEY}`,
+        authorization: `Bearer ${TOKEN}`,
         body: { area: 'Chiswick, London', theme: 'The Thames and brewing history', checkpoints: 3, 'max-walk-km': 2.5 },
       },
     ]);
@@ -562,7 +585,6 @@ describe('a design runs to the end', () => {
   });
 
   it('polls only while the page is visible', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage();
     fillDesign({ area: 'Chiswick', theme: 'Brewing' });
     await submit('design-form');
@@ -582,7 +604,6 @@ describe('a design runs to the end', () => {
   });
 
   it('opens a draft from the list, and follows the link back to all drafts', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage();
     fillDesign({ area: 'Chiswick', theme: 'Brewing' });
     await submit('design-form');
@@ -605,7 +626,6 @@ describe('a design runs to the end', () => {
 
 describe('the form', () => {
   it('is checked in the page against the limits, and nothing is sent until it passes', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage();
 
     fillDesign({ area: 'Ab', theme: '', checkpoints: '9', maxWalkKm: '0.4' });
@@ -626,7 +646,6 @@ describe('the form', () => {
   });
 
   it('disables the button while sending, and sends only once', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage();
     let answer = () => undefined as void;
     server.fetch.mockImplementationOnce(
@@ -655,7 +674,6 @@ describe('the form', () => {
 
 describe('busy and disabled', () => {
   it('says a design is already running, links to it, and keeps the form usable', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage();
     server.state.nextId = RUNNING;
     fillDesign({ area: 'Chiswick', theme: 'Brewing' });
@@ -682,7 +700,6 @@ describe('busy and disabled', () => {
   });
 
   it('stops saying so once the running design has finished', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage();
     fillDesign({ area: 'Chiswick', theme: 'Brewing' });
     await submit('design-form');
@@ -699,7 +716,6 @@ describe('busy and disabled', () => {
   });
 
   it("says the designer isn't switched on, and keeps the form usable", async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     server.state.disabled = true;
     await loadPage();
 
@@ -718,7 +734,6 @@ describe('busy and disabled', () => {
   });
 
   it('says when the game server cannot be reached, and keeps the form usable', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage();
     server.state.offline = true;
 
@@ -730,47 +745,70 @@ describe('busy and disabled', () => {
   });
 });
 
-describe('the key', () => {
-  it('is asked for, checked, and kept in sessionStorage only', async () => {
+describe('signing in', () => {
+  it('uses the account: nothing is asked for, and every call carries its token', async () => {
+    await loadPage();
+
+    expect(visible('workspace')).toBe(true);
+    expect(visible('sign-in')).toBe(false);
+    expect(server.calls[0]).toMatchObject({ url: '/designer/drafts', authorization: `Bearer ${TOKEN}` });
+    // The old key form and its Forget key button are gone.
+    expect(document.getElementById('organiser-key')).toBeNull();
+    expect(document.getElementById('sign-in-form')).toBeNull();
+    expect(document.getElementById('sign-out')).toBeNull();
+    expect(sessionStorage).toHaveLength(0);
+    expect(localSetItem).not.toHaveBeenCalled();
+    expect(window.location.href).not.toContain(TOKEN);
+  });
+
+  it('asks a signed-out visitor to sign in, with a link that comes back here, and calls nothing', async () => {
+    account.status = 'signed-out';
+    await loadPage(`/designer?draft=${DRAFT}`);
+
+    expect(visible('sign-in')).toBe(true);
+    expect(visible('workspace')).toBe(false);
+    expect(text('sign-in-text')).toBe('Sign in with your account to design hunts.');
+    expect(visible('sign-in-link')).toBe(true);
+    expect($('sign-in-link').getAttribute('href')).toBe(
+      `/sign-in?redirect=${encodeURIComponent(`/designer?draft=${DRAFT}`)}`,
+    );
+    expect(server.calls).toHaveLength(0);
+  });
+
+  it.each([
+    ['not-set-up', "Sign-in isn't set up yet."],
+    ['unavailable', "Sign-in couldn't load. Check your connection and reload the page."],
+  ])('says so, with no link, when sign-in is %s', async (status, message) => {
+    account.status = status;
+    await loadPage();
+
+    expect(visible('sign-in')).toBe(true);
+    expect(text('sign-in-error')).toBe(message);
+    expect(visible('sign-in-link')).toBe(false);
+    expect(server.calls).toHaveLength(0);
+  });
+
+  it("says this account isn't an organiser on a 403, shows nothing else, and stops polling", async () => {
+    server.state.forbidden = true;
     await loadPage();
 
     expect(visible('sign-in')).toBe(true);
     expect(visible('workspace')).toBe(false);
-    expect(server.calls).toHaveLength(0);
-
-    input('organiser-key').value = `  ${KEY} `;
-    await submit('sign-in-form');
-
-    expect(server.calls[0]).toMatchObject({ url: '/designer/drafts', authorization: `Bearer ${KEY}` });
-    expect(visible('workspace')).toBe(true);
-    expect(visible('sign-out')).toBe(true);
-    expect(input('organiser-key').value).toBe('');
-    expect(sessionStorage.getItem(KEY_STORAGE_KEY)).toBe(KEY);
-    expect(localSetItem).not.toHaveBeenCalled();
-    expect(window.location.href).not.toContain(KEY);
+    expect(text('sign-in-error')).toBe("This account isn't an organiser.");
+    expect(visible('sign-in-link')).toBe(false);
+    const before = server.calls.length;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(server.calls).toHaveLength(before);
   });
 
-  it('asks again after a wrong key, without keeping it', async () => {
-    await loadPage();
-
-    input('organiser-key').value = 'not-the-key';
-    await submit('sign-in-form');
-
-    expect(visible('sign-in')).toBe(true);
-    expect(text('sign-in-error')).toBe("That organiser key isn't right.");
-    expect(sessionStorage.getItem(KEY_STORAGE_KEY)).toBeNull();
-    expect(text('sign-in-error')).not.toContain('not-the-key');
-  });
-
-  it.each(['the drafts list', 'the draft'])('a 401 from %s clears the key and asks again', async (which) => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
+  it.each(['the drafts list', 'the draft'])('a 401 from %s says to sign in again and stops', async (which) => {
     await loadPage();
     fillDesign({ area: 'Chiswick', theme: 'Brewing' });
     await submit('design-form');
     expect(visible('draft-panel')).toBe(true);
 
-    // The key is changed on the game-server.
-    server.state.key = 'a-new-key-of-at-least-24-chars';
+    // The game-server stops accepting the token.
+    server.state.token = 'a-new-token';
     if (which === 'the drafts list') {
       setVisibility('hidden');
       setVisibility('visible');
@@ -780,8 +818,9 @@ describe('the key', () => {
     await settle();
 
     expect(visible('sign-in')).toBe(true);
-    expect(text('sign-in-error')).toBe("That organiser key isn't right.");
-    expect(sessionStorage.getItem(KEY_STORAGE_KEY)).toBeNull();
+    expect(text('sign-in-error')).toBe(
+      "Your sign-in wasn't accepted. Sign out from the account menu and sign in again.",
+    );
     // Nothing from the draft is left on the page.
     expect($('steps').children).toHaveLength(0);
     expect($('drafts').children).toHaveLength(0);
@@ -791,44 +830,15 @@ describe('the key', () => {
     expect(server.calls).toHaveLength(before);
   });
 
-  it('a 401 when starting a design clears the key and asks again', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
+  it('a 401 when starting a design stops too', async () => {
     await loadPage();
-    server.state.key = 'a-new-key-of-at-least-24-chars';
+    server.state.token = 'a-new-token';
 
     fillDesign({ area: 'Chiswick', theme: 'Brewing' });
     await submit('design-form');
 
     expect(visible('sign-in')).toBe(true);
-    expect(sessionStorage.getItem(KEY_STORAGE_KEY)).toBeNull();
-  });
-
-  it('is forgotten with Forget key', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
-    await loadPage();
-
-    $('sign-out').click();
-
-    expect(sessionStorage.getItem(KEY_STORAGE_KEY)).toBeNull();
-    expect(visible('sign-in')).toBe(true);
-    expect(visible('sign-out')).toBe(false);
-  });
-
-  it('lives in memory when sessionStorage throws, and still never in localStorage', async () => {
-    vi.spyOn(sessionStorage, 'setItem').mockImplementation(() => {
-      throw new Error('QuotaExceededError');
-    });
-    await loadPage();
-
-    input('organiser-key').value = KEY;
-    await submit('sign-in-form');
-    fillDesign({ area: 'Chiswick', theme: 'Brewing' });
-    await submit('design-form');
-
-    expect(visible('workspace')).toBe(true);
-    expect(server.posts()[0]?.authorization).toBe(`Bearer ${KEY}`);
-    expect(localSetItem).not.toHaveBeenCalled();
-    expect(localStorage).toHaveLength(0);
+    expect(visible('workspace')).toBe(false);
   });
 });
 
@@ -852,7 +862,6 @@ describe('a failed draft', () => {
   });
 
   it('says why in plain words, lists the problems, and is not polled', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage(`/designer?draft=${FAILED}`);
 
     expect(text('draft-status')).toBe('Failed');
@@ -866,7 +875,6 @@ describe('a failed draft', () => {
   });
 
   it('shows no Progress heading when the run had no steps', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     Object.assign(server.drafts.get(FAILED)!, { progress: [], problems: [], run: { error: { code: 'interrupted' } } });
     await loadPage(`/designer?draft=${FAILED}`);
 
@@ -876,7 +884,6 @@ describe('a failed draft', () => {
   });
 
   it('Try again fills in the form with the same request', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage(`/designer?draft=${FAILED}`);
 
     $('try-again').click();
@@ -900,7 +907,6 @@ describe('a failed draft', () => {
 
 describe('a link to a draft that does not exist', () => {
   it('says so, and stops', async () => {
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage(`/designer?draft=${RUNNING}`);
 
     expect(text('draft-error')).toBe('No draft with this id. Check the link.');
@@ -961,7 +967,7 @@ describe('reviewing a ready draft', () => {
     expect(server.patches().at(-1)).toEqual({
       method: 'PATCH',
       url: `/designer/drafts/${DRAFT}/checkpoints/1`,
-      authorization: `Bearer ${KEY}`,
+      authorization: `Bearer ${TOKEN}`,
       body: { review: 'accepted' },
     });
     expect(cardText(1, '.review-badge')).toBe('Accepted');
@@ -993,7 +999,7 @@ describe('reviewing a ready draft', () => {
       {
         method: 'PATCH',
         url: `/designer/drafts/${DRAFT}/checkpoints/2`,
-        authorization: `Bearer ${KEY}`,
+        authorization: `Bearer ${TOKEN}`,
         body: { clue: 'A seat that looks over the water.' },
       },
     ]);
@@ -1122,9 +1128,9 @@ describe('reviewing a ready draft', () => {
     expect(cardButton(1, 'save').disabled).toBe(false);
   });
 
-  it('a 401 clears the key and asks again', async () => {
+  it('a 401 stops and takes the cards off the screen', async () => {
     await openReadyDraft();
-    server.state.key = 'a-new-key-of-at-least-24-chars';
+    server.state.token = 'a-new-token';
 
     await clickCard(1, 'accepted');
 
@@ -1255,7 +1261,7 @@ describe('publishing', () => {
       {
         method: 'POST',
         url: `/designer/drafts/${DRAFT}/publish`,
-        authorization: `Bearer ${KEY}`,
+        authorization: `Bearer ${TOKEN}`,
         body: {
           name: 'Chiswick river hunt',
           'start-time': iso('2026-10-11T10:00'),
@@ -1271,7 +1277,10 @@ describe('publishing', () => {
     const link = $('moderator-link') as HTMLAnchorElement;
     expect(link.getAttribute('href')).toBe(`/moderator?session=${SESSION}`);
     expect(link.textContent).toBe(`http://localhost:3000/moderator?session=${SESSION}`);
-    expect(text('moderator-code')).toBe(MODERATOR_CODE);
+    // The game-server still sends the moderator code until it retires them;
+    // the publisher is the hunt's moderator, so it isn't shown (issue #67).
+    expect(document.getElementById('moderator-code')).toBeNull();
+    expect(document.body.textContent).not.toContain(MODERATOR_CODE);
     expect(items('team-codes')).toEqual(['Red Foxes RED-7Q2K Copy', 'Blue Herons BLUE-7Q2K Copy', 'Green Owls GREEN-7Q2K Copy']);
     expect($('publication').textContent).toContain('Send each team only its own code');
     // Only the accepted checkpoints are in the hunt.
@@ -1379,9 +1388,6 @@ describe('publishing', () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(copy.textContent).toBe('Copy');
 
-    $('copy-moderator-code').click();
-    await settle();
-    expect(writeText).toHaveBeenLastCalledWith(MODERATOR_CODE);
     $('copy-moderator-link').click();
     await settle();
     expect(writeText).toHaveBeenLastCalledWith(`http://localhost:3000/moderator?session=${SESSION}`);
@@ -1398,18 +1404,17 @@ describe('publishing', () => {
     await reloadPage(`/designer?draft=${DRAFT}`);
 
     expect(publicationReads()).toEqual([
-      { method: 'GET', url: `/designer/drafts/${DRAFT}/publication`, authorization: `Bearer ${KEY}`, body: undefined },
+      { method: 'GET', url: `/designer/drafts/${DRAFT}/publication`, authorization: `Bearer ${TOKEN}`, body: undefined },
     ]);
     expect(text('draft-status')).toBe('Published');
     expect(text('publication-session')).toBe(SESSION);
-    expect(text('moderator-code')).toBe(MODERATOR_CODE);
+    expect(document.body.textContent).not.toContain(MODERATOR_CODE);
     expect(items('team-codes')).toEqual(['Red Foxes RED-7Q2K Copy', 'Blue Herons BLUE-7Q2K Copy', 'Green Owls GREEN-7Q2K Copy']);
 
     // Closing the draft takes the codes off the page.
     $('draft-close').click();
     await settle();
     expect($('team-codes').children).toHaveLength(0);
-    expect(text('moderator-code')).toBe('');
   });
 
   it("says when a published draft's codes can't be had, and tries again", async () => {
@@ -1422,7 +1427,6 @@ describe('publishing', () => {
       teams: [{ name: 'Red Foxes', 'join-code': 'RED-7Q2K' }],
     });
     server.state.publicationOffline = true;
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage(`/designer?draft=${DRAFT}`);
 
     expect(text('draft-status')).toBe('Published');
@@ -1435,7 +1439,7 @@ describe('publishing', () => {
 
     expect(visible('publication-error')).toBe(false);
     expect(visible('publication-retry')).toBe(false);
-    expect(text('moderator-code')).toBe(MODERATOR_CODE);
+    expect(items('team-codes')).toEqual(['Red Foxes RED-7Q2K Copy']);
   });
 });
 
@@ -1508,7 +1512,6 @@ describe('the route map', () => {
       'created-at': '2026-10-08T08:59:00Z',
       'finished-at': null,
     });
-    sessionStorage.setItem(KEY_STORAGE_KEY, KEY);
     await loadPage(`/designer?draft=${RUNNING}`);
 
     expect(text('draft-status')).toBe('Designing…');
@@ -1640,7 +1643,7 @@ describe('the route map', () => {
     expect(panTo.mock.calls[0]![0]).toMatchObject({ lat, lng });
   });
 
-  it('takes the places off the map when the draft is closed, and when the key is forgotten', async () => {
+  it('takes the places off the map when the draft is closed, and when the account is turned away', async () => {
     await openReadyDraft();
     expect(mapMarkers()).toHaveLength(3);
 
@@ -1653,7 +1656,10 @@ describe('the route map', () => {
     await settle();
     expect(mapMarkers()).toHaveLength(3);
 
-    $('sign-out').click();
+    // The account is turned away: nothing stays on the map.
+    server.state.forbidden = true;
+    setVisibility('hidden');
+    setVisibility('visible');
     await settle();
     expect(mapMarkers()).toHaveLength(0);
     expect(document.querySelector('#route-map .leaflet-tooltip')).toBeNull();
@@ -1661,10 +1667,8 @@ describe('the route map', () => {
 });
 
 describe('privacy', () => {
-  it('writes nothing from a draft, and never the key, to localStorage, the URL or the console', async () => {
+  it('writes nothing from a draft, and never the token, to localStorage, the URL or the console', async () => {
     await loadPage();
-    input('organiser-key').value = KEY;
-    await submit('sign-in-form');
     fillDesign({ area: 'Chiswick, London', theme: 'The Thames and brewing history' });
     await submit('design-form');
     for (let i = 0; i < 6; i += 1) {
@@ -1676,8 +1680,8 @@ describe('privacy', () => {
 
     expect(localSetItem).not.toHaveBeenCalled();
     expect(localStorage).toHaveLength(0);
-    // sessionStorage holds the key and nothing else.
-    expect([...sessionStorage.items]).toEqual([[KEY_STORAGE_KEY, KEY]]);
+    // Nothing is kept in sessionStorage either: the account holds the sign-in.
+    expect(sessionStorage).toHaveLength(0);
     // The URL holds the draft's id and nothing else.
     expect(window.location.search).toBe(`?draft=${DRAFT}`);
     expect(window.location.hash).toBe('');
@@ -1705,7 +1709,6 @@ describe('privacy', () => {
     await submit('publish-form');
     $('publish-ok').click();
     await settle();
-    expect(text('moderator-code')).toBe(MODERATOR_CODE);
     await reloadPage(`/designer?draft=${DRAFT}`);
     expect(items('team-codes')).toHaveLength(2);
 
@@ -1720,8 +1723,8 @@ describe('privacy', () => {
     ];
     expect(localSetItem).not.toHaveBeenCalled();
     expect(localStorage).toHaveLength(0);
-    // sessionStorage holds the key and nothing else.
-    expect([...sessionStorage.items]).toEqual([[KEY_STORAGE_KEY, KEY]]);
+    // Nothing is kept in sessionStorage either: the account holds the sign-in.
+    expect(sessionStorage).toHaveLength(0);
     for (const secret of secrets) {
       expect(window.location.href).not.toContain(secret);
     }

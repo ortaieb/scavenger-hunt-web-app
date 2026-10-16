@@ -8,10 +8,11 @@ checkpoint, and publish the hunt for teams to join.
 
 ## Starting a design
 
-1. **Open the designer** on a laptop or a phone: `/designer`. Enter the
-   **organiser key** (the game-server's `GAME_SERVER_ORGANISER_KEY`). It's
-   kept only in that browser tab and forgotten when the tab closes. **Forget
-   key** signs you out.
+1. **Open the designer** on a laptop or a phone: `/designer`, and **sign in
+   with your account**. You need to be an organiser (or an admin): an admin
+   gives you the role. Nothing is typed or kept on the page; the account menu
+   at the top signs you out. If the page says *This account isn't an
+   organiser*, you're signed in with an account that hasn't been made one.
 2. **Fill in *New design***:
    - **Area**: a place the map can find, such as "Chiswick, London". A large
      area is cut down to a walkable size around its centre.
@@ -162,16 +163,20 @@ reads the draft again.
 Once it's published, the page shows:
 
 - the **session** id;
-- the **moderator link** (`/moderator?session=…`) and the **moderator
-  code**, for whoever runs the session;
+- the **moderator link** (`/moderator?session=…`);
 - each team's **join code**.
 
 Each has a **Copy** button.
 
-![A published hunt, with its moderator link and code and the teams' join codes](images/designer-published.png)
+![A published hunt, with its moderator link and the teams' join codes](images/designer-published.png)
 
 **Send each team only its own code.** Anyone with a code can join as that
-team. Give the moderator link and code only to the moderator.
+team.
+
+You're the hunt's moderator: open the moderator link and sign in with the
+same account. To have someone else run the session, add them there under
+**Moderators**, by the email address they signed up with (they must be an
+organiser). The hunt has no moderator code to hand out.
 
 The codes are fetched from the game-server each time you open the published
 draft, and never kept in the browser. To see them again later, open the
@@ -183,11 +188,11 @@ data © OpenStreetMap contributors.
 ## Keeping the answers secret
 
 A draft's clues, places, poses and scenes are the answers to the hunt, and
-the join and moderator codes let anyone into it. The page shows them only to
-you, with your key. The browser doesn't keep them, and the page's address
+the join codes let anyone into it. The page shows them only to you, signed in
+with your account. The browser doesn't keep them, and the page's address
 holds only the draft's id. The map shows where every checkpoint is: don't
 show the screen to players.
 
-If the page says *That organiser key isn't right*, the key was mistyped or
-has changed on the game-server: enter it again. *No connection to the game
+If the page says *Your sign-in wasn't accepted*, sign out from the account
+menu and sign in again. *No connection to the game
 server* means the game-server can't be reached. The page keeps trying.

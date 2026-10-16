@@ -1,20 +1,20 @@
 // DOM wiring for the hunt designer at /designer (issue #59). Everything it
 // decides lives in designer-logic.js; this file reads and writes the DOM,
-// keeps the organiser key for this tab, calls this app's designer relays,
-// and polls a running draft. A ready draft is reviewed card by card and
+// calls this app's designer relays, and polls a running draft. A ready draft is reviewed card by card and
 // published here too (issue #60), under a map of its route (issue #61).
 //
-// The organiser key is typed once and kept in sessionStorage only (so it
-// goes when the tab closes), and sent only as `Authorization: Bearer
-// <key>`: never in a URL, never in storage that outlives the tab, never
-// logged.
+// Organisers sign in with their account (issue #67): each call carries the
+// Clerk session token (authorised-fetch.js), as `Authorization: Bearer
+// <token>`. Nothing is typed, and nothing about the sign-in is stored here.
 //
 // A draft's clues, scenes and coordinates are the answers to its hunt. They
 // are kept in memory and on screen only: never stored, never logged, and
 // never in the URL, which holds a draft's id and nothing else. The same goes
-// for a publication's join codes and moderator code, which are fetched again
+// for a publication's join codes, which are fetched again
 // each time a published draft is opened.
 
+import { accountHref, signInPrompt } from './account-logic.js';
+import { accountStatus, authorisedFetch } from './authorised-fetch.js';
 import {
   changedFields,
   CHECKPOINT_LIMITS,
@@ -63,15 +63,12 @@ const REQUEST_TIMEOUT_MS = 15000;
 const TICK_MS = 1000;
 const COPIED_MS = 2000;
 const HIGHLIGHT_MS = 2500;
-const KEY_STORAGE_KEY = 'scavenger-hunt.organiserKey';
 
 const el = (id) => document.getElementById(id);
 
 const signInSection = el('sign-in');
-const signInForm = el('sign-in-form');
-const keyInput = el('organiser-key');
-const signInBtn = el('sign-in-button');
-const signOutBtn = el('sign-out');
+const signInText = el('sign-in-text');
+const signInLink = el('sign-in-link');
 const workspaceEl = el('workspace');
 const draftPanel = el('draft-panel');
 const stepsEl = el('steps');
@@ -150,37 +147,16 @@ let mapFitted = '';
 let tilesFailed = false;
 let highlightTimer = null;
 
-// --- the key, for this tab only ----------------------------------------------
-// sessionStorage can throw (private browsing, blocked storage): then the
-// key lives in memory for this page only.
+// --- signed in ---------------------------------------------------------------
+// Set once the visitor is known to be signed in, and cleared when the
+// game-server turns them away. Polling and calls only run while it's set.
 
-let keyInMemory = null;
-
-function loadKey() {
-  try {
-    return sessionStorage.getItem(KEY_STORAGE_KEY) ?? keyInMemory;
-  } catch {
-    return keyInMemory;
-  }
-}
-
-function storeKey(key) {
-  keyInMemory = key;
-  try {
-    if (key === null) {
-      sessionStorage.removeItem(KEY_STORAGE_KEY);
-    } else {
-      sessionStorage.setItem(KEY_STORAGE_KEY, key);
-    }
-  } catch {
-    // Kept in memory only; see above.
-  }
-}
+let signedIn = false;
 
 // --- calls to this app's designer relays -------------------------------------
 
 /**
- * Calls one of this app's designer relays with the key. `date` is the
+ * Calls one of this app's designer relays with the account's token. `date` is the
  * response's Date header, so a running draft's time follows the server.
  *
  * @param {string} url
@@ -191,9 +167,8 @@ async function callRelay(url, init) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(url, {
+    const response = await authorisedFetch(url, {
       ...init,
-      headers: { ...init.headers, authorization: `Bearer ${loadKey() ?? ''}` },
       cache: 'no-store',
       signal: controller.signal,
     });
@@ -293,10 +268,13 @@ function draftUrl(id) {
 function showWorkspace() {
   signInSection.hidden = true;
   workspaceEl.hidden = false;
-  signOutBtn.hidden = false;
 }
 
-function showSignIn(message) {
+/**
+ * Takes everything off the screen and says why: not signed in (with a link to
+ * sign in), or signed in but not allowed (just the message).
+ */
+function showGate(message, link) {
   stopTimers();
   // Take every draft and every code off the screen, as well as out of memory.
   drafts = null;
@@ -314,17 +292,18 @@ function showSignIn(message) {
   renderDraft();
   renderList();
   workspaceEl.hidden = true;
-  signOutBtn.hidden = true;
   signInSection.hidden = false;
-  showMessage('sign-in-error', message);
-  keyInput.value = '';
-  keyInput.focus();
+  signInText.textContent = link ? message : '';
+  signInText.hidden = !link;
+  showMessage('sign-in-error', link ? '' : message);
+  signInLink.href = accountHref('sign-in', `${window.location.pathname}${window.location.search}`);
+  signInLink.hidden = !link;
 }
 
-/** A 401 from any relay: forget the key and ask again. */
-function askForKey(message) {
-  storeKey(null);
-  showSignIn(message);
+/** A 401 or 403 from a relay: this account can't go on, so stop and say so. */
+function endAccess(error) {
+  signedIn = false;
+  showGate(error.message, false);
 }
 
 function renderList() {
@@ -529,7 +508,7 @@ async function refreshList() {
   clearTimeout(listTimer);
   listTimer = null;
   const { status, body } = await fetchDrafts();
-  if (requestId !== listRequestId || !loadKey()) {
+  if (requestId !== listRequestId || !signedIn) {
     return;
   }
 
@@ -543,8 +522,8 @@ async function refreshList() {
     }
   } else {
     const error = designerError(status, body);
-    if (error.askForKey) {
-      askForKey(error.message);
+    if (error.signInAgain || error.forbidden) {
+      endAccess(error);
       return;
     }
     // Keep showing the last list; say what's wrong.
@@ -564,7 +543,7 @@ async function refreshList() {
 function scheduleListPoll() {
   clearTimeout(listTimer);
   listTimer = null;
-  if (document.visibilityState !== 'visible' || !loadKey()) {
+  if (document.visibilityState !== 'visible' || !signedIn) {
     return;
   }
   const running = drafts ? runningDraftId(drafts) : null;
@@ -638,7 +617,7 @@ async function pollDraft() {
   clearTimeout(draftTimer);
   draftTimer = null;
   const { status, body, receivedAt, date } = await fetchDraft(id);
-  if (requestId !== draftRequestId || id !== openId || !loadKey()) {
+  if (requestId !== draftRequestId || id !== openId || !signedIn) {
     return;
   }
 
@@ -660,8 +639,8 @@ async function pollDraft() {
   }
 
   const error = designerError(status, body);
-  if (error.askForKey) {
-    askForKey(error.message);
+  if (error.signInAgain || error.forbidden) {
+    endAccess(error);
     return;
   }
   if (error.offline) {
@@ -680,7 +659,7 @@ async function pollDraft() {
 function scheduleDraftPoll() {
   clearTimeout(draftTimer);
   draftTimer = null;
-  if (openId && document.visibilityState === 'visible' && loadKey() && !draftError && (!draft || isRunning(draft))) {
+  if (openId && document.visibilityState === 'visible' && signedIn && !draftError && (!draft || isRunning(draft))) {
     draftTimer = setTimeout(() => void pollDraft(), DRAFT_POLL_MS);
   }
   updateTick();
@@ -715,7 +694,7 @@ el('draft-close').addEventListener('click', (event) => {
 
 window.addEventListener('popstate', () => {
   const id = readDraftId(new URLSearchParams(window.location.search));
-  if (id === openId || !loadKey()) {
+  if (id === openId || !signedIn) {
     openId = id;
     return;
   }
@@ -732,7 +711,7 @@ document.addEventListener('visibilitychange', () => {
     stopTimers();
     return;
   }
-  if (loadKey()) {
+  if (signedIn) {
     void refreshList();
     if (openId && !draftError && (!draft || isRunning(draft))) {
       void pollDraft();
@@ -814,7 +793,7 @@ designForm.addEventListener('submit', async (event) => {
   setSending(true);
   const { status, body } = await postDesign(request);
   setSending(false);
-  if (!loadKey()) {
+  if (!signedIn) {
     return;
   }
 
@@ -827,14 +806,14 @@ designForm.addEventListener('submit', async (event) => {
   }
 
   const error = designerError(status, body);
-  if (error.askForKey) {
-    askForKey(error.message);
+  if (error.signInAgain || error.forbidden) {
+    endAccess(error);
     return;
   }
   if (error.busy) {
     // Link to the design that's running: the 409 doesn't say which it is.
     await refreshList();
-    if (!loadKey()) {
+    if (!signedIn) {
       return;
     }
     showDesignError(error.message, drafts ? runningDraftId(drafts) : null);
@@ -1122,7 +1101,7 @@ async function sendEdit(position, edit, fill) {
   renderPublishReadiness();
   const { status, body } = await patchCheckpoint(id, position, edit);
   state.saving = false;
-  if (!loadKey() || draft?.id !== id || cards.get(position) !== state) {
+  if (!signedIn || draft?.id !== id || cards.get(position) !== state) {
     return;
   }
 
@@ -1141,8 +1120,8 @@ async function sendEdit(position, edit, fill) {
   }
 
   const error = editError(status, body);
-  if (error.askForKey) {
-    askForKey(error.message);
+  if (error.signInAgain || error.forbidden) {
+    endAccess(error);
     return;
   }
   const shown = error.problems && Object.values(error.problems).some((messages) => messages.length > 0);
@@ -1374,7 +1353,7 @@ publishForm.addEventListener('submit', async (event) => {
   renderPublishReadiness();
   const { status, body } = await postPublish(id, request);
   publishing = false;
-  if (!loadKey()) {
+  if (!signedIn) {
     return;
   }
 
@@ -1395,8 +1374,8 @@ publishForm.addEventListener('submit', async (event) => {
 
   renderPublishReadiness();
   const error = publishError(status, body);
-  if (error.askForKey) {
-    askForKey(error.message);
+  if (error.signInAgain || error.forbidden) {
+    endAccess(error);
     return;
   }
   showPublishError(error.message, error.lines);
@@ -1424,7 +1403,7 @@ async function loadPublication() {
   publicationMessage = '';
   renderPublication();
   const { status, body } = await fetchPublication(id);
-  if (requestId !== publicationRequestId || draft?.id !== id || !loadKey()) {
+  if (requestId !== publicationRequestId || draft?.id !== id || !signedIn) {
     return;
   }
   const view = status === 200 ? publicationView(body) : null;
@@ -1432,8 +1411,8 @@ async function loadPublication() {
     publication = { draftId: id, view };
   } else {
     const error = publicationError(status, body);
-    if (error.askForKey) {
-      askForKey(error.message);
+    if (error.signInAgain || error.forbidden) {
+      endAccess(error);
       return;
     }
     publicationMessage = status === 200 ? "The game-server's answer had no codes in it." : error.message;
@@ -1475,12 +1454,6 @@ el('copy-moderator-link').addEventListener('click', (event) => {
   }
 });
 
-el('copy-moderator-code').addEventListener('click', (event) => {
-  if (publication) {
-    void copyText(publication.view.moderatorCode, event.currentTarget, 'the moderator code');
-  }
-});
-
 function renderPublication() {
   const published = draft?.status === 'published';
   const view = published && publication?.draftId === draft?.id ? publication.view : null;
@@ -1491,7 +1464,6 @@ function renderPublication() {
   const link = el('moderator-link');
   link.textContent = view ? moderatorUrl(view) : '';
   link.setAttribute('href', view ? view.moderatorPath : '/moderator');
-  el('moderator-code').textContent = view?.moderatorCode ?? '';
   el('copy-status').textContent = '';
   el('team-codes').replaceChildren(
     ...(view?.teams ?? []).map((team) => {
@@ -1532,42 +1504,22 @@ el('checkpoints').addEventListener('click', (event) => {
   }
 });
 
-// --- the key ---------------------------------------------------------------------
-
-signInForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const key = keyInput.value.trim();
-  if (!key) {
-    showMessage('sign-in-error', 'Enter the organiser key.');
-    return;
-  }
-  storeKey(key);
-  keyInput.value = '';
-  showMessage('sign-in-error', '');
-  signInBtn.disabled = true;
-  signInBtn.textContent = 'Checking…';
-  await refreshList();
-  signInBtn.disabled = false;
-  signInBtn.textContent = 'Continue';
-  if (loadKey() && openId) {
-    openDraft(openId, false);
-  }
-});
-
-signOutBtn.addEventListener('click', () => {
-  storeKey(null);
-  showSignIn('');
-});
-
 // --- start -------------------------------------------------------------------------
 
-renderTeams();
-if (loadKey()) {
+async function start() {
+  renderTeams();
+  const status = await accountStatus();
+  if (status !== 'signed-in') {
+    const { message, showLink } = signInPrompt(status, 'design hunts');
+    showGate(message, showLink);
+    return;
+  }
+  signedIn = true;
   showWorkspace();
   void refreshList();
   if (openId) {
     openDraft(openId, false);
   }
-} else {
-  showSignIn('');
 }
+
+void start();

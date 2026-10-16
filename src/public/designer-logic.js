@@ -1218,7 +1218,7 @@ export function validatePublish(form, offsetMinutes) {
 
 /**
  * A publication, checked and shaped for the screen: the session, the
- * moderator's link and code, and each team's join code. null when the body
+ * moderator's link, and each team's join code. null when the body
  * isn't one.
  *
  * @param {unknown} body the publish response, or GET …/publication
@@ -1226,7 +1226,6 @@ export function validatePublish(form, offsetMinutes) {
  *   session: string,
  *   name: string,
  *   moderatorPath: string,
- *   moderatorCode: string,
  *   teams: { name: string, code: string }[],
  * } | null}
  */
@@ -1242,7 +1241,6 @@ export function publicationView(body) {
     session,
     name: textOf(name),
     moderatorPath: `/moderator?${new URLSearchParams({ session })}`,
-    moderatorCode: textOf(/** @type {Record<string, unknown>} */ (body)['moderator-code']),
     teams: (Array.isArray(teams) ? teams : [])
       .filter((team) => team && typeof team === 'object' && typeof team.name === 'string' && typeof team['join-code'] === 'string')
       .map((team) => ({ name: team.name, code: team['join-code'] })),
@@ -1254,16 +1252,21 @@ export function publicationView(body) {
 /**
  * @typedef {{
  *   message: string,
- *   askForKey: boolean,
+ *   signInAgain: boolean,
+ *   forbidden: boolean,
  *   offline: boolean,
  *   busy: boolean,
  * }} DesignerError
  */
 
+export const NOT_AN_ORGANISER = "This account isn't an organiser.";
+
 /**
  * What a failed call to the designer relays means for the screen. Branches
  * on the game-server's `code` when there is one, then on the status. The
- * messages are fixed text: never the key, and never anything from a draft.
+ * messages are fixed text: never a token, and never anything from a draft. A
+ * 401 is a sign-in the game-server didn't accept; a 403 is an account that
+ * isn't an organiser (issue #67).
  *
  * @param {number} status 0 for a call that never came back
  * @param {unknown} body
@@ -1271,9 +1274,16 @@ export function publicationView(body) {
  */
 export function designerError(status, body) {
   const code = body && typeof body === 'object' && 'code' in body ? body.code : undefined;
-  const error = { askForKey: false, offline: false, busy: false };
+  const error = { signInAgain: false, forbidden: false, offline: false, busy: false };
   if (status === 401) {
-    return { ...error, message: "That organiser key isn't right.", askForKey: true };
+    return {
+      ...error,
+      message: "Your sign-in wasn't accepted. Sign out from the account menu and sign in again.",
+      signInAgain: true,
+    };
+  }
+  if (status === 403) {
+    return { ...error, message: NOT_AN_ORGANISER, forbidden: true };
   }
   if (code === 'designer_busy') {
     return { ...error, message: 'A design is already running.', busy: true };

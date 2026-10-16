@@ -312,11 +312,13 @@ The `participant` id is a team's key to its clues and codes, and `/arrive`'s
 ### /moderator
 
 The moderator screen (issue #44), for a phone or a laptop:
-`/moderator?session=<uuid>`. The moderator code is typed once on the page,
-kept in `sessionStorage` (so it goes when the tab closes) and sent only as
-`Authorization: Bearer <code>`: never in a URL, never in `localStorage`,
-never logged. A `401` says "That code isn't right for this session." and
-asks again.
+`/moderator?session=<uuid>`. The moderator signs in with their **account**
+(issue #67): nothing is typed, and every call carries the Clerk session
+token as `Authorization: Bearer <token>` (`authorised-fetch.js`), never in a
+URL, never in browser storage, never logged. Signed out, the page links to
+`/sign-in?redirect=<this page>`; the account menu signs out. A `403` says
+"This account isn't a moderator of this hunt." and a `401` says to sign in
+again, both stopping the polling and clearing the screen.
 
 - **All teams have finished**: a banner once every joined team has
   completed its route while the session runs, adding "Review the photos
@@ -346,16 +348,23 @@ asks again.
   first, with **Change** on each to rule again.
 - **Blocked outside the session**: newest first, up to 50 (time, team, what
   they tried and why).
+- **Moderators** (issue #67), at the bottom: adds another by the email
+  address they signed up with (`POST /moderator/moderators`) and removes one
+  (`DELETE`). A `404` says "No account with that email address: ask them to
+  sign up first." and a `409` that the account isn't an organiser. The
+  game-server has no list to read back, so the people added on this visit are
+  kept in memory (an email address is personal data) and listed with
+  **Remove**, which uses the `pid` the add answered with.
 - Refreshes the overview and the review queue every 5 s while the page is
   visible. Shows checkpoint numbers and names, never clues or locations.
 
 Photos need the `Authorization` header, which an `<img src>` can't send:
 the page fetches each one through its relay with the header and shows it
 through an object URL, revoked when it leaves the screen (a ruled photo,
-a closed **Change**, or signing out). Cards are kept across polls, so a
-note being typed keeps its text and focus. No photo, note, `detail` text or
-moderator code is written to `localStorage` or logged. A `401` from any
-relay, photos included, asks for the code again.
+a closed **Change**, or being turned away). Cards are kept across polls, so a
+note being typed keeps its text and focus. No photo, note, `detail` text,
+email address or token is written to browser storage or logged. A `401` or
+`403` from any relay, photos included, clears the screen.
 
 The pure logic is in `moderator-logic.js`, unit-tested like `game-logic.js`.
 
@@ -386,10 +395,27 @@ may describe the photo, is never logged. The two photo relays stream the
 JPEG back with `Cache-Control: no-store`, so neither the browser nor a
 proxy keeps a copy.
 
-The moderator code travels in the **`Authorization` header**, which is
+The player's Clerk token travels in the **`Authorization` header**, which is
 forwarded unchanged. It is **never logged**, and never added or defaulted:
 a request without it is forwarded without it, so the game-server answers
-`401 {"detail": "moderator code required", "code": "moderator_unauthorised"}`.
+`401`. These relays check the token first like the play relays do (with
+`REQUIRE_SIGN_IN` on, a call with no signed-in account is `401
+sign_in_required` without calling the game-server). The game-server answers
+`403` for a valid account that isn't a moderator of the session. (A moderator
+code still works upstream until the game-server retires the codes.)
+
+Two more relays manage a session's moderators (issue #67):
+
+| This app | Game-server | Body |
+| --- | --- | --- |
+| `POST /moderator/moderators` | `POST ${GAME_SERVER_URL}/sessions/{session}/moderators` | `{"session", "email"}`; only `{"email"}` goes upstream |
+| `DELETE /moderator/moderators?session=<uuid>&pid=<pid>` | `DELETE ${GAME_SERVER_URL}/sessions/{session}/moderators/{pid}` | none |
+
+An add answers `201`, or `200` when they already were one, `{"session",
+"pid"}`; `404 no_account` for no account with that email address, `409
+not_an_organiser`, or `403`. A remove answers `204`, or `404
+not_a_moderator`. The email address is in the body only, never logged, and
+both answers are uncached.
 
 Start and stop answer `201` when the phase changes and `200` on a repeat,
 with the session clock: `{"phase", "planned-start", "planned-end",
@@ -424,10 +450,11 @@ is `ready` or `failed`, then reviews a ready draft and publishes it as a
 session. The [organiser guide](docs/organiser-guide.md) is served at
 `/organiser-guide`.
 
-- **The organiser key** (the game-server's `GAME_SERVER_ORGANISER_KEY`) is
-  typed once, kept in `sessionStorage` (in memory if storage throws) and
-  sent only as `Authorization: Bearer <key>`. **Forget key** clears it, and
-  a `401` from any relay clears it and asks again.
+- **Signing in** is with the organiser's account (issue #67): nothing is
+  typed, and every call carries the Clerk session token (`authorised-fetch.js`).
+  Signed out, the page links to `/sign-in?redirect=<this page>`. A `403`
+  says "This account isn't an organiser." and a `401` says to sign in
+  again; both clear the screen and stop the polling.
 - **New design**: area and theme (3–200 characters, trimmed), checkpoints
   (3–8, default 3) and the longest walk in km (0.5–10, default 3), checked
   in the page against the game-server's limits before anything is sent.
@@ -496,15 +523,15 @@ session. The [organiser guide](docs/organiser-guide.md) is served at
 
 A draft's clues, scenes and coordinates are the answers to its hunt, and a
 publication's codes are credentials. Nothing from a draft, no code, and
-never the key, is written to `localStorage`, put in the URL (other than the
+never the token, is written to `localStorage`, put in the URL (other than the
 draft's id) or logged, by the page or by this app; error messages are fixed
-text or the game-server's own, so the key can't appear in one.
+text or the game-server's own, so a token can't appear in one.
 
 The pure logic is in `designer-logic.js`, unit-tested like
-`moderator-logic.js`. `tests/designer-page.dom.test.ts` also runs the page's
+`moderator-logic.js`. `tests/moderator-page.dom.test.ts` runs the moderator page's `moderator.js` the same way (signing in with an account, the `403`, adding and removing moderators). `tests/designer-page.dom.test.ts` also runs the page's
 own `designer.js` in [happy-dom](https://github.com/capricorn86/happy-dom),
 against a stub of the designer API: a design run to `ready`, busy and
-disabled, the key, failures, reviewing (the `PATCH` bodies, Save's changed
+disabled, signing in with an account, failures, reviewing (the `PATCH` bodies, Save's changed
 fields, a `422 names_place` under the clue), the publish button's rule,
 publishing and reopening a published draft, the route map (drawn by the
 same Leaflet build the page loads: markers, loop, linking both ways, failed
@@ -530,10 +557,12 @@ no-store`.
 `draft` must be a UUID and `position` an integer from 1 to 8 (`400`
 otherwise, nothing sent upstream). A new design's, an edit's and a
 publish's body go upstream as sent: the game-server alone decides whether
-they're valid (`422` otherwise). The organiser key travels in the
-**`Authorization` header**, forwarded unchanged when present, never added
-or defaulted, and **never logged**; without it the game-server answers
-`401 {"detail": "organiser key required", "code": "organiser_unauthorised"}`.
+they're valid (`422` otherwise). The player's Clerk token travels in the
+**`Authorization` header**, checked first like the play relays' and
+forwarded unchanged when present, never added or defaulted, and **never
+logged**; without one the game-server answers `401`, and for an account that
+isn't an organiser, `403`. (The organiser key still works upstream until the
+game-server retires it.)
 
 Starting a design answers `202 {"id", "status": "running"}`, or `409
 {"code": "designer_busy"}` while another is running, or `503 {"code":
@@ -548,8 +577,10 @@ draft answers in full: its `request`, `progress`, `checkpoints`,
 Publishing answers `201 {"session", "name", "moderator-code", "teams":
 [{"name", "join-code"}]}`, `409 {"code": "draft_not_ready"}` saying why, or
 `422`; `…/publication` answers the same body again for a published draft,
-or `404`. These two are the only responses with join codes or a moderator
-code: relayed uncached and never logged. See the game-server's
+or `404`. These two are the only responses with join codes (and, until the
+game-server retires them, a moderator code, which the page doesn't show: the
+publisher is already the hunt's moderator): relayed uncached and never
+logged. See the game-server's
 [API docs](https://github.com/ortaieb/scavenger-hunt-game-server/blob/main/docs/api.md#hunt-designer).
 
 To try it locally, run the game-server with `GAME_SERVER_DESIGNER_RUNNER=stub`
@@ -703,9 +734,9 @@ src/
   public/      static assets for /play, /challenge, /moderator and /designer (html, css, client js)
     game-logic.js       pure screen/instruction/error logic for /play, unit tested directly
     moderator-logic.js  pure phase/standings/blocked/review logic for /moderator, unit tested directly
-    moderator.js        /moderator's DOM, sign-in, polling, photo and ruling wiring
+    moderator.js        /moderator's DOM, account sign-in, polling, photo, ruling and moderators wiring
     designer-logic.js   pure form/progress/failure/review/publish logic for /designer, unit tested directly
-    designer.js         /designer's DOM, organiser key, design form, draft polling, review and publish wiring
+    designer.js         /designer's DOM, account sign-in, design form, draft polling, review and publish wiring
     account-logic.js    pure return-path (same-origin only) and Clerk script URL logic, unit tested directly
     clerk.js            loads clerk-js from the instance's Frontend API, using GET /config
     relay-auth.js       pure token-per-call, provisioning-retry-once and sign-in-required logic, unit tested directly

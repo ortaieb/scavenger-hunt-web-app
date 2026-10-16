@@ -4,8 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#111318" />
-    <!-- The organiser key is never put in a URL, and the URL holds nothing
-         from a draft but its id: don't leak it either. -->
+    <!-- The URL holds nothing from a draft but its id: don't leak even that. -->
     <meta name="referrer" content="no-referrer" />
     <title>Scavenger Hunt — Hunt designer</title>
     <link rel="stylesheet" href="/play.css" />
@@ -20,10 +19,7 @@
     <header class="top">
       <div class="app-bar">
         <span class="app-name">Scavenger Hunt · Designer</span>
-        <div class="app-actions">
-          <div id="account"></div>
-          <button id="sign-out" type="button" class="button-secondary sign-out" hidden>Forget key</button>
-        </div>
+        <div id="account"></div>
       </div>
       <div id="connection" class="message message--warning connection" role="status" hidden>
         <span id="connection-text"></span>
@@ -31,29 +27,16 @@
     </header>
 
     <main class="designer">
-      <!-- The organiser key: typed once and kept for this tab only. -->
+      <!-- Not signed in, or signed in but not an organiser (issue #67): the
+           account menu above is how to sign in and out. -->
       <section id="sign-in" class="panel" hidden>
         <h1>Hunt designer</h1>
         <p class="note intro">
           Design a hunt for an area and a theme: the designer picks the places and writes the clues.
         </p>
-        <!-- POST, so even without JavaScript the key never lands in a URL. -->
-        <form id="sign-in-form" method="post" action="/designer/sign-in" novalidate>
-          <label for="organiser-key" class="field-label">Organiser key</label>
-          <input
-            id="organiser-key"
-            name="key"
-            type="password"
-            autocomplete="off"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            required
-          />
-          <p class="note">Kept only in this tab, and forgotten when it closes.</p>
-          <p id="sign-in-error" class="message message--error" role="alert" hidden></p>
-          <button id="sign-in-button" type="submit">Continue</button>
-        </form>
+        <p id="sign-in-error" class="message message--error" role="alert" hidden></p>
+        <p id="sign-in-text"></p>
+        <p><a id="sign-in-link" class="account-link" href="/sign-in" hidden>Sign in</a></p>
         <p class="note"><a href="/organiser-guide">Organiser guide</a></p>
       </section>
 
@@ -163,7 +146,10 @@
             <div id="draft-published" hidden>
               <div id="publication" class="publication" hidden>
                 <h2>Published</h2>
-                <p class="note">The hunt is playable now. The moderator starts it when the teams are ready.</p>
+                <p class="note">
+                  The hunt is playable now. You're its moderator, and you can add others from the moderator page. It
+                  starts when you start it.
+                </p>
                 <dl class="publication-details">
                   <dt>Session</dt>
                   <dd><code id="publication-session" class="code-text"></code></dd>
@@ -172,17 +158,11 @@
                     <a id="moderator-link" href="/moderator" target="_blank" rel="noopener"></a>
                     <button id="copy-moderator-link" type="button" class="button-secondary copy-button">Copy</button>
                   </dd>
-                  <dt>Moderator code</dt>
-                  <dd class="copy-row">
-                    <code id="moderator-code" class="code-text"></code>
-                    <button id="copy-moderator-code" type="button" class="button-secondary copy-button">Copy</button>
-                  </dd>
                 </dl>
                 <h3>Teams and their join codes</h3>
                 <ul id="team-codes" class="team-codes"></ul>
                 <p class="message message--note">
-                  Send each team only its own code: anyone with a code can join as that team. Keep the moderator
-                  code for the moderator.
+                  Send each team only its own code: anyone with a code can join as that team.
                 </p>
                 <p class="note">These codes aren't kept on this page. Open this draft again to see them.</p>
                 <p id="copy-status" class="visually-hidden" role="status"></p>

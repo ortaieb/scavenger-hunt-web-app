@@ -1068,12 +1068,11 @@ describe('a publication', () => {
     ],
   };
 
-  it('has the session, the moderator link and code, and each team with its join code', () => {
+  it('has the session, the moderator link, and each team with its join code, and not the moderator code', () => {
     expect(publicationView(body)).toEqual({
       session: body.session,
       name: 'Chiswick river hunt',
       moderatorPath: `/moderator?session=${body.session}`,
-      moderatorCode: 'MOD-7Q2KX9P4H3MN',
       teams: [
         { name: 'Red Foxes', code: 'FOX-7Q2K' },
         { name: 'Blue Herons', code: 'HERON-4M8P' },
@@ -1126,7 +1125,7 @@ describe('editError', () => {
   });
 
   it('asks for the key on a 401, and says when there is no connection', () => {
-    expect(editError(401, { code: 'organiser_unauthorised' })).toMatchObject({ askForKey: true });
+    expect(editError(401, { code: 'organiser_unauthorised' })).toMatchObject({ signInAgain: true });
     expect(editError(0, null)).toMatchObject({ offline: true, message: 'No connection to the game server.' });
   });
 });
@@ -1168,7 +1167,7 @@ describe('publishError', () => {
   });
 
   it('asks for the key on a 401, and says when there is no connection', () => {
-    expect(publishError(401, null)).toMatchObject({ askForKey: true });
+    expect(publishError(401, null)).toMatchObject({ signInAgain: true });
     expect(publishError(504, null)).toMatchObject({ offline: true });
   });
 });
@@ -1188,10 +1187,21 @@ describe('publicationError', () => {
 });
 
 describe('designerError', () => {
-  it('asks for the key again on a 401', () => {
-    expect(designerError(401, { detail: 'organiser key required', code: 'organiser_unauthorised' })).toEqual({
-      message: "That organiser key isn't right.",
-      askForKey: true,
+  it('asks to sign in again on a 401', () => {
+    expect(designerError(401, { detail: 'unauthorised', code: 'unauthorised' })).toEqual({
+      message: "Your sign-in wasn't accepted. Sign out from the account menu and sign in again.",
+      signInAgain: true,
+      forbidden: false,
+      offline: false,
+      busy: false,
+    });
+  });
+
+  it("says the account isn't an organiser on a 403", () => {
+    expect(designerError(403, { detail: 'forbidden', code: 'forbidden' })).toEqual({
+      message: "This account isn't an organiser.",
+      signInAgain: false,
+      forbidden: true,
       offline: false,
       busy: false,
     });
@@ -1200,7 +1210,8 @@ describe('designerError', () => {
   it('says a design is already running on a 409 designer_busy', () => {
     expect(designerError(409, { detail: 'a design is already running', code: 'designer_busy' })).toEqual({
       message: 'A design is already running.',
-      askForKey: false,
+      signInAgain: false,
+      forbidden: false,
       offline: false,
       busy: true,
     });
@@ -1209,7 +1220,8 @@ describe('designerError', () => {
   it("says the designer isn't switched on on a 503 designer_disabled", () => {
     expect(designerError(503, { detail: 'the hunt designer is not available', code: 'designer_disabled' })).toEqual({
       message: "The hunt designer isn't switched on on the game-server.",
-      askForKey: false,
+      signInAgain: false,
+      forbidden: false,
       offline: false,
       busy: false,
     });
@@ -1221,21 +1233,22 @@ describe('designerError', () => {
     [422, { detail: [] }, "The game-server didn't accept this design. Check the fields and try again."],
     [500, null, 'Something went wrong (error 500).'],
   ])('explains a %s', (status, body, message) => {
-    expect(designerError(status, body)).toMatchObject({ message, askForKey: false, offline: false, busy: false });
+    expect(designerError(status, body)).toMatchObject({ message, signInAgain: false, offline: false, busy: false });
   });
 
   it.each([0, 502, 503, 504])('treats %s as no connection', (status) => {
     expect(designerError(status, { error: 'Could not reach the game server: connect ECONNREFUSED' })).toEqual({
       message: 'No connection to the game server.',
-      askForKey: false,
+      signInAgain: false,
+      forbidden: false,
       offline: true,
       busy: false,
     });
   });
 
-  it('never repeats what the server said, so the key can never show', () => {
+  it('never repeats what the server said, so a token can never show', () => {
     const key = 'organiser-key-that-must-never-show';
-    for (const status of [0, 400, 401, 404, 409, 422, 500, 502, 503, 504]) {
+    for (const status of [0, 400, 401, 403, 404, 409, 422, 500, 502, 503, 504]) {
       expect(designerError(status, { detail: key, error: key, code: key }).message).not.toContain(key);
     }
   });
