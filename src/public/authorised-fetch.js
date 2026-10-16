@@ -68,6 +68,24 @@ export function authorisedFetch(url, init = {}) {
 }
 
 /**
+ * Whether the visitor is signed in, for the pages that need an account
+ * (/moderator and /designer, issue #67).
+ *
+ * @returns {Promise<'signed-in' | 'signed-out' | 'not-set-up' | 'unavailable'>}
+ */
+export async function accountStatus() {
+  try {
+    const clerk = await loadClerk();
+    if (clerk === undefined) {
+      return 'not-set-up';
+    }
+    return clerk.user ? 'signed-in' : 'signed-out';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+/**
  * True when sign-in is required and the player isn't signed in, so /play asks
  * them to sign in before joining. False when it can't tell (offline, Clerk
  * blocked): the server's answer to the join then decides.

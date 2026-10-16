@@ -85,3 +85,22 @@ export const NOT_SET_UP_TEXT = "Sign-in isn't set up yet.";
 export function joinNeedsSignIn(config, signedIn) {
   return config?.requireSignIn === true && !signedIn;
 }
+
+/**
+ * What /moderator and /designer say when the visitor isn't signed in, and
+ * whether to offer the link to sign in (issue #67). `status` is the page's
+ * accountStatus(); `what` finishes "Sign in with your account to …".
+ *
+ * @param {'signed-in' | 'signed-out' | 'not-set-up' | 'unavailable'} status
+ * @param {string} what
+ * @returns {{ message: string, showLink: boolean }}
+ */
+export function signInPrompt(status, what) {
+  if (status === 'not-set-up') {
+    return { message: NOT_SET_UP_TEXT, showLink: false };
+  }
+  if (status === 'unavailable') {
+    return { message: "Sign-in couldn't load. Check your connection and reload the page.", showLink: false };
+  }
+  return { message: `Sign in with your account to ${what}.`, showLink: true };
+}

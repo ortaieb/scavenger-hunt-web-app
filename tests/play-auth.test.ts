@@ -164,15 +164,76 @@ describe('the rest of the app with sign-in required', () => {
     },
   );
 
-  it('does not ask for sign-in on the moderator and designer relays yet', async () => {
-    const fetchMock = okFetch();
+});
 
-    const response = await request(createApp(requiredConfig, { fetch: fetchMock })).get(
-      `/moderator/overview?session=${VALID_SESSION}`,
-    );
+// The moderator and designer relays sign in with an account too (issue #67).
+const DRAFT = '5b0c7a1e-1111-4111-8111-111111111111';
+const accountCalls: [string, (app: App, token?: string) => request.Test][] = [
+  ['POST /moderator/start', (app, token) => withToken(request(app).post('/moderator/start').send({ session: VALID_SESSION }), token)],
+  ['GET /moderator/overview', (app, token) => withToken(request(app).get(`/moderator/overview?session=${VALID_SESSION}`), token)],
+  ['GET /moderator/review', (app, token) => withToken(request(app).get(`/moderator/review?session=${VALID_SESSION}`), token)],
+  [
+    'POST /moderator/ruling',
+    (app, token) =>
+      withToken(
+        request(app).post('/moderator/ruling').send({ session: VALID_SESSION, submission: 1, ruling: 'approve' }),
+        token,
+      ),
+  ],
+  ['GET /moderator/photo', (app, token) => withToken(request(app).get(`/moderator/photo?session=${VALID_SESSION}&submission=1`), token)],
+  [
+    'POST /moderator/moderators',
+    (app, token) =>
+      withToken(request(app).post('/moderator/moderators').send({ session: VALID_SESSION, email: 'bob@example.com' }), token),
+  ],
+  [
+    'DELETE /moderator/moderators',
+    (app, token) => withToken(request(app).delete(`/moderator/moderators?session=${VALID_SESSION}&pid=p_1`), token),
+  ],
+  ['GET /designer/drafts', (app, token) => withToken(request(app).get('/designer/drafts'), token)],
+  ['POST /designer/drafts', (app, token) => withToken(request(app).post('/designer/drafts').send({ area: 'x' }), token)],
+  ['GET /designer/drafts/:draft', (app, token) => withToken(request(app).get(`/designer/drafts/${DRAFT}`), token)],
+  [
+    'PATCH /designer/drafts/:draft/checkpoints/:position',
+    (app, token) => withToken(request(app).patch(`/designer/drafts/${DRAFT}/checkpoints/1`).send({ review: 'accepted' }), token),
+  ],
+  ['POST /designer/drafts/:draft/publish', (app, token) => withToken(request(app).post(`/designer/drafts/${DRAFT}/publish`).send({}), token)],
+  ['GET /designer/drafts/:draft/publication', (app, token) => withToken(request(app).get(`/designer/drafts/${DRAFT}/publication`), token)],
+];
+
+describe.each(accountCalls)('%s', (_name, send) => {
+  it('forwards a valid token unchanged when sign-in is required', async () => {
+    const fetchMock = okFetch();
+    const token = sessionToken();
+
+    const response = await send(createApp(requiredConfig, { fetch: fetchMock }), token);
 
     expect(response.status).toBe(200);
-    expect(sentAuthorization(fetchMock)).toBeUndefined();
+    expect(sentAuthorization(fetchMock)).toBe(`Bearer ${token}`);
+  });
+
+  it.each([
+    ['no token', undefined],
+    ['a token signed by another key', forgedToken()],
+  ])('answers 401 sign_in_required for %s, without calling the game-server', async (_case, token) => {
+    const fetchMock = okFetch();
+
+    const response = await send(createApp(requiredConfig, { fetch: fetchMock }), token);
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({ detail: 'sign-in required', code: 'sign_in_required' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('forwards whatever Authorization there is, and adds none, when sign-in is not required', async () => {
+    const withIt = okFetch();
+    const without = okFetch();
+
+    await send(createApp(clerkConfig, { fetch: withIt }), 'a-moderator-code');
+    await send(createApp(clerkConfig, { fetch: without }));
+
+    expect(sentAuthorization(withIt)).toBe('Bearer a-moderator-code');
+    expect(sentAuthorization(without)).toBeUndefined();
   });
 });
 

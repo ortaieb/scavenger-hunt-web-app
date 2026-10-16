@@ -50,6 +50,9 @@ const upload = multer({
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// A person's id in the users directory, as the game-server hands it back.
+const PID_RE = /^[\w-]{1,100}$/;
+
 function isValidUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID_RE.test(value);
 }
@@ -181,19 +184,20 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
 
   app.disable('x-powered-by');
 
-  // The play relays check a player's Clerk session token (see issue #66).
+  // The play relays check a player's Clerk session token (see issue #66), and
+  // so do the moderator and designer relays (see issue #67).
   // Tokens are verified here with Clerk's public key, so no request makes a
   // network call, and only for a token issued to this app's own origin.
-  // Mounted on the play relays alone, not on the whole app: for a request
-  // with no token, a development instance's middleware can answer a page load
-  // with a redirect to Clerk (a "handshake"), and nothing but these fetches
-  // should ever depend on a player being signed in.
+  // Mounted on those relays alone, not on the whole app: for a request with
+  // no token, a development instance's middleware can answer a page load with
+  // a redirect to Clerk (a "handshake"), and nothing but these fetches should
+  // ever depend on someone being signed in.
   // @clerk/express insists on a secret key even when the JWT key makes every
   // check local, so both are needed for it to run.
   const clerkEnabled = Boolean(config.clerkPublishableKey && config.clerkSecretKey);
-  const playAuth: RequestHandler[] = [];
+  const accountAuth: RequestHandler[] = [];
   if (clerkEnabled) {
-    playAuth.push(
+    accountAuth.push(
       clerkMiddleware({
         publishableKey: config.clerkPublishableKey,
         secretKey: config.clerkSecretKey,
@@ -205,7 +209,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // With sign-in required, a call with no signed-in player is turned away
   // here and never reaches the game-server. Without a working Clerk setup
   // nobody is signed in, so it fails closed.
-  playAuth.push((req, res, next) => {
+  accountAuth.push((req, res, next) => {
     if (config.requireSignIn) {
       const userId = clerkEnabled ? getAuth(req, { acceptsToken: 'session_token' }).userId : null;
       if (!userId) {
@@ -318,7 +322,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // via CORS, so the request has to go server-to-server.
   // Express 5 forwards a rejected handler promise to the error middleware,
   // so this can be async without an extra try/catch wrapper at the top level.
-  app.post('/challenge', ...playAuth, upload.single('image'), async (req: Request, res: ExpressResponse) => {
+  app.post('/challenge', ...accountAuth, upload.single('image'), async (req: Request, res: ExpressResponse) => {
     const { latitude, longitude, capturedAt, session, participant, checkpoint } = req.body as Record<
       string,
       string | undefined
@@ -394,7 +398,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // only (see issue #15), so it does no validation of its own; the
   // game-server's answer (in_range: true|false) never includes checkpoint
   // coordinates, distance or a radius, and neither does this relay.
-  app.post('/checkpoint/proximity', ...playAuth, express.json(), async (req: Request, res: ExpressResponse) => {
+  app.post('/checkpoint/proximity', ...accountAuth, express.json(), async (req: Request, res: ExpressResponse) => {
     try {
       const upstream = await doFetch(new URL('/checkpoint/proximity', config.gameServerUrl), {
         method: 'POST',
@@ -417,7 +421,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // ticking a box that starts unticked, and the game-server alone decides
   // whether the code/consent are valid (see issue #30). The body may carry
   // the team's join code — never logged.
-  app.post('/join', ...playAuth, express.json(), async (req: Request, res: ExpressResponse) => {
+  app.post('/join', ...accountAuth, express.json(), async (req: Request, res: ExpressResponse) => {
     try {
       const upstream = await fetchWithTimeout(
         doFetch,
@@ -446,7 +450,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // Relays a participant's current state, for the same HTTPS/CORS reasons
   // as the other relays. Validates session/participant as UUIDs before
   // forwarding (400 otherwise, nothing sent upstream) — see issue #30.
-  app.get('/state', ...playAuth, async (req: Request, res: ExpressResponse) => {
+  app.get('/state', ...accountAuth, async (req: Request, res: ExpressResponse) => {
     const { session, participant } = req.query as Record<string, string | undefined>;
 
     if (!isValidUuid(session) || !isValidUuid(participant)) {
@@ -484,7 +488,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // upstream only { checkpoint } — session/participant are already encoded
   // into the upstream URL path, matching its shape (see issue #30). The
   // response carries a short-lived, team-private code — never logged.
-  app.post('/arrive', ...playAuth, express.json(), async (req: Request, res: ExpressResponse) => {
+  app.post('/arrive', ...accountAuth, express.json(), async (req: Request, res: ExpressResponse) => {
     const { session, participant, checkpoint } = (req.body ?? {}) as Record<string, unknown>;
 
     if (!isValidUuid(session) || !isValidUuid(participant)) {
@@ -524,15 +528,18 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     }
   });
 
-  // Relays a call that carries a secret in the Authorization header: the
+  // Relays a call that carries a credential in the Authorization header: the
   // moderator's session controls, overview, review queue, rulings and photos
   // (see issues #39 and #55), and the organiser's hunt designer (see issue
-  // #59). The browser can't call the game-server directly, for the same
-  // HTTPS/CORS reasons as the other relays. Each route validates what goes
-  // into the upstream path first (400 otherwise, nothing sent upstream). The
-  // moderator code or organiser key is forwarded unchanged when present,
-  // never added or defaulted when missing (so the game-server answers 401
-  // itself), and never logged.
+  // #59). Both screens now sign in with an account (see issue #67), so the
+  // credential is the player's Clerk session token, checked first like the
+  // play relays'. The browser can't call the game-server directly, for the
+  // same HTTPS/CORS reasons as the other relays. Each route validates what
+  // goes into the upstream path first (400 otherwise, nothing sent upstream).
+  // The Authorization header is forwarded unchanged when present, never added
+  // or defaulted when missing (so the game-server answers 401 itself), and
+  // never logged. (A moderator code or organiser key still works upstream
+  // until the game-server retires them.)
   async function relayAuthorised(
     req: Request,
     res: ExpressResponse,
@@ -542,7 +549,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
       body,
       photo = false,
       noStore = photo,
-    }: { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown; photo?: boolean; noStore?: boolean } = {},
+    }: { method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'; body?: unknown; photo?: boolean; noStore?: boolean } = {},
   ): Promise<void> {
     const authorization = req.get('authorization');
     const headers: Record<string, string> = authorization === undefined ? {} : { authorization };
@@ -591,7 +598,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // A new account's first call (see issue #66): the game-server creates the
   // person and puts their id into Clerk, after a `provisioning_required`.
   // Needs the token and nothing else; it answers `{ "pid" }`.
-  app.post('/me/provision', ...playAuth, async (req: Request, res: ExpressResponse) => {
+  app.post('/me/provision', ...accountAuth, async (req: Request, res: ExpressResponse) => {
     await relayAuthorised(req, res, '/me/provision', { method: 'POST', noStore: true });
   });
 
@@ -640,7 +647,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
 
   // Start and stop carry no body upstream: the session is in the path.
   for (const action of ['start', 'stop'] as const) {
-    app.post(`/moderator/${action}`, express.json(), async (req: Request, res: ExpressResponse) => {
+    app.post(`/moderator/${action}`, ...accountAuth, express.json(), async (req: Request, res: ExpressResponse) => {
       const { session } = (req.body ?? {}) as Record<string, unknown>;
       if (!isValidUuid(session)) {
         res.status(400).json({ error: 'session must be a valid UUID' });
@@ -653,7 +660,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // The overview and the review queue (photos waiting for a ruling, and
   // the latest rulings) are read the same way.
   for (const view of ['overview', 'review'] as const) {
-    app.get(`/moderator/${view}`, async (req: Request, res: ExpressResponse) => {
+    app.get(`/moderator/${view}`, ...accountAuth, async (req: Request, res: ExpressResponse) => {
       const { session } = req.query;
       if (!isValidUuid(session)) {
         res.status(400).json({ error: 'session must be a valid UUID' });
@@ -666,7 +673,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // Approves or rejects a photo. Only { ruling, note } go upstream, as
   // sent: the game-server alone decides whether they're valid. The note may
   // describe the photo, so it's never logged either.
-  app.post('/moderator/ruling', express.json(), async (req: Request, res: ExpressResponse) => {
+  app.post('/moderator/ruling', ...accountAuth, express.json(), async (req: Request, res: ExpressResponse) => {
     const { session, submission, ruling, note } = (req.body ?? {}) as Record<string, unknown>;
     if (!isValidUuid(session)) {
       res.status(400).json({ error: 'session must be a valid UUID' });
@@ -682,7 +689,41 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     });
   });
 
-  app.get('/moderator/photo', async (req: Request, res: ExpressResponse) => {
+  // A session's moderators, added by email address (see issue #67). The
+  // email goes upstream as sent, in the body only (the game-server resolves it
+  // to a person and answers `{session, pid}`, or 404 for no account): personal
+  // data, so never logged and never cached. A moderator is removed by the
+  // `pid` that answer gave, in the query: it's an id, not an address.
+  app.post('/moderator/moderators', ...accountAuth, express.json(), async (req: Request, res: ExpressResponse) => {
+    const { session, email } = (req.body ?? {}) as Record<string, unknown>;
+    if (!isValidUuid(session)) {
+      res.status(400).json({ error: 'session must be a valid UUID' });
+      return;
+    }
+    await relayAuthorised(req, res, `${sessionPath(session)}/moderators`, {
+      method: 'POST',
+      body: { email },
+      noStore: true,
+    });
+  });
+
+  app.delete('/moderator/moderators', ...accountAuth, async (req: Request, res: ExpressResponse) => {
+    const { session, pid } = req.query;
+    if (!isValidUuid(session)) {
+      res.status(400).json({ error: 'session must be a valid UUID' });
+      return;
+    }
+    if (typeof pid !== 'string' || !PID_RE.test(pid)) {
+      res.status(400).json({ error: 'pid must be a person id' });
+      return;
+    }
+    await relayAuthorised(req, res, `${sessionPath(session)}/moderators/${encodeURIComponent(pid)}`, {
+      method: 'DELETE',
+      noStore: true,
+    });
+  });
+
+  app.get('/moderator/photo', ...accountAuth, async (req: Request, res: ExpressResponse) => {
     const { session, submission } = req.query;
     if (!isValidUuid(session)) {
       res.status(400).json({ error: 'session must be a valid UUID' });
@@ -696,7 +737,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     await relayAuthorised(req, res, `${sessionPath(session)}/submissions/${submissionId}/photo`, { photo: true });
   });
 
-  app.get('/moderator/reference-photo', async (req: Request, res: ExpressResponse) => {
+  app.get('/moderator/reference-photo', ...accountAuth, async (req: Request, res: ExpressResponse) => {
     const { session, checkpoint, position } = req.query;
     if (!isValidUuid(session)) {
       res.status(400).json({ error: 'session must be a valid UUID' });
@@ -721,17 +762,17 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // the Authorization header. A draft's clues, scenes and coordinates are
   // the answers to its hunt: relayed as they come, never logged, and kept by
   // neither the browser's cache nor a proxy.
-  app.post('/designer/drafts', express.json(), async (req: Request, res: ExpressResponse) => {
+  app.post('/designer/drafts', ...accountAuth, express.json(), async (req: Request, res: ExpressResponse) => {
     // The request (area, theme, checkpoints, max-walk-km) goes upstream as
     // sent: the game-server alone decides whether it's valid.
     await relayAuthorised(req, res, '/designer/drafts', { method: 'POST', body: req.body ?? {}, noStore: true });
   });
 
-  app.get('/designer/drafts', async (req: Request, res: ExpressResponse) => {
+  app.get('/designer/drafts', ...accountAuth, async (req: Request, res: ExpressResponse) => {
     await relayAuthorised(req, res, '/designer/drafts', { noStore: true });
   });
 
-  app.get('/designer/drafts/:draft', async (req: Request, res: ExpressResponse) => {
+  app.get('/designer/drafts/:draft', ...accountAuth, async (req: Request, res: ExpressResponse) => {
     const { draft } = req.params;
     if (!isValidUuid(draft)) {
       res.status(400).json({ error: 'draft must be a valid UUID' });
@@ -745,25 +786,30 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
   // decides whether they're valid. The publish response and the publication
   // carry every team's join code and the moderator code: relayed as they
   // come, never logged, and kept by neither the browser's cache nor a proxy.
-  app.patch('/designer/drafts/:draft/checkpoints/:position', express.json(), async (req: Request, res: ExpressResponse) => {
-    const { draft, position } = req.params;
-    if (!isValidUuid(draft)) {
-      res.status(400).json({ error: 'draft must be a valid UUID' });
-      return;
-    }
-    const checkpoint = parseDraftPosition(position);
-    if (checkpoint === undefined) {
-      res.status(400).json({ error: `position must be an integer from 1 to ${MAX_DRAFT_CHECKPOINTS}` });
-      return;
-    }
-    await relayAuthorised(req, res, `/designer/drafts/${encodeURIComponent(draft)}/checkpoints/${checkpoint}`, {
-      method: 'PATCH',
-      body: req.body ?? {},
-      noStore: true,
-    });
-  });
+  app.patch(
+    '/designer/drafts/:draft/checkpoints/:position',
+    ...accountAuth,
+    express.json(),
+    async (req: Request, res: ExpressResponse) => {
+      const { draft, position } = req.params;
+      if (!isValidUuid(draft)) {
+        res.status(400).json({ error: 'draft must be a valid UUID' });
+        return;
+      }
+      const checkpoint = parseDraftPosition(position);
+      if (checkpoint === undefined) {
+        res.status(400).json({ error: `position must be an integer from 1 to ${MAX_DRAFT_CHECKPOINTS}` });
+        return;
+      }
+      await relayAuthorised(req, res, `/designer/drafts/${encodeURIComponent(draft)}/checkpoints/${checkpoint}`, {
+        method: 'PATCH',
+        body: req.body ?? {},
+        noStore: true,
+      });
+    },
+  );
 
-  app.post('/designer/drafts/:draft/publish', express.json(), async (req: Request, res: ExpressResponse) => {
+  app.post('/designer/drafts/:draft/publish', ...accountAuth, express.json(), async (req: Request, res: ExpressResponse) => {
     const { draft } = req.params;
     if (!isValidUuid(draft)) {
       res.status(400).json({ error: 'draft must be a valid UUID' });
@@ -776,7 +822,7 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     });
   });
 
-  app.get('/designer/drafts/:draft/publication', async (req: Request, res: ExpressResponse) => {
+  app.get('/designer/drafts/:draft/publication', ...accountAuth, async (req: Request, res: ExpressResponse) => {
     const { draft } = req.params;
     if (!isValidUuid(draft)) {
       res.status(400).json({ error: 'draft must be a valid UUID' });
