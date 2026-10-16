@@ -585,8 +585,8 @@ discovery) come back, uncached, with the body streamed. The relay waits
 ### Accounts: /sign-in, /sign-up and /config
 
 Players, moderators and organisers have accounts, run by
-[Clerk](https://clerk.com) (issue #65). This adds the screens only: no game
-call needs, or sends, a sign-in yet.
+[Clerk](https://clerk.com) (issue #65). The screens come first; the play
+calls send the player's token as described [below](#sending-the-players-token-issue-66).
 
 - `/sign-in` and `/sign-up` load clerk-js with a script tag from the
   instance's Frontend API (no bundler), call `Clerk.load()`, then
@@ -600,6 +600,50 @@ call needs, or sends, a sign-in yet.
   `CLERK_PUBLISHABLE_KEY` and `CLERK_FRONTEND_API`, both public values, or
   `null` for one that isn't set. Without them the pages say sign-in isn't set
   up and the rest of the app works as today.
+
+### Sending the player's token (issue #66)
+
+The game-server checks a Clerk session token on every play call. Tokens live
+60 seconds and phones put background tabs to sleep, so the page asks clerk-js
+for a token **before each call** (`Clerk.session.getToken()`: the cached one
+while it's fresh) and sends it as `Authorization: Bearer …`
+(`authorised-fetch.js`, used by `api.js`, the proximity check and
+`/challenge`). Signed out, or without Clerk set up, it sends none.
+
+- **Play relays** (`/join`, `/state`, `/arrive`, `/challenge`,
+  `/checkpoint/proximity`) check the token with `@clerk/express`, using
+  `CLERK_JWT_KEY` so no request makes a network call, and only for
+  `APP_ORIGIN`. The middleware runs on these relays only, never on page
+  loads, where a development instance could answer a signed-out visitor with
+  a redirect to Clerk. With `REQUIRE_SIGN_IN` on and no signed-in player they
+  answer `401 {"detail": "sign-in required", "code": "sign_in_required"}`
+  without calling the game-server. Otherwise `Authorization` is forwarded
+  unchanged when present, never added, never logged. The moderator and
+  designer relays still carry a code or key.
+- **`POST /me/provision`** relays to the game-server (token only, answers
+  `{"pid"}`). A new account's first call gets `401 provisioning_required`;
+  the page calls `/me/provision`, takes a fresh token (`skipCache`) and
+  retries **once**. That is what makes the Clerk webhook optional.
+- **`sign_in_required`** from a signed-out player goes to
+  `/sign-in?redirect=<this page>`. With a token sent it doesn't (no going
+  round in circles): `/play` says to sign in again.
+- With `REQUIRE_SIGN_IN` on, `/play` asks a signed-out player to sign in
+  before joining (`GET /config` also returns `requireSignIn`).
+- **`POST /webhooks/clerk`** passes Clerk's webhook to
+  `${GAME_SERVER_URL}/internal/clerk-events`: the **raw** body byte for byte
+  (up to 1 MB, no JSON parsing) and `content-type`, `svix-id`,
+  `svix-timestamp` and `svix-signature`, and answers the game-server's
+  status (`502`/`504` when it can't be reached, so Svix retries). Nothing is
+  checked here: the game-server holds the signing secret. Point the Clerk
+  webhook at `https://<this app's domain>/webhooks/clerk`.
+
+#### Rolling out sign-in
+
+1. Deploy with `REQUIRE_SIGN_IN=false`. Tokens are sent when the player is
+   signed in; nothing requires one.
+2. Set the game-server's `GAME_SERVER_AUTH_MODE=optional`.
+3. Set `REQUIRE_SIGN_IN=true` here, then the game-server's
+   `GAME_SERVER_AUTH_MODE=required`.
 
 In the Clerk Dashboard, the development instance uses email address with an
 email verification code (name, username and phone number off), blocks
@@ -630,6 +674,10 @@ as origins.
 | `GAME_SERVER_TIMEOUT_MS`  | `45000`                  | How long `POST /challenge` waits for the game-server before returning `504` |
 | `CLERK_PUBLISHABLE_KEY`   | —                        | Clerk instance's publishable key (public), for sign-up and sign-in; without it the pages say sign-in isn't set up |
 | `CLERK_FRONTEND_API`      | —                        | Clerk instance's Frontend API host, e.g. `verb-noun-00.clerk.accounts.dev` (public) |
+| `CLERK_SECRET_KEY`        | —                        | Clerk instance's secret key (**secret**); `@clerk/express` needs it to run, and it must be set with `CLERK_PUBLISHABLE_KEY` for tokens to be checked |
+| `CLERK_JWT_KEY`           | —                        | Clerk instance's public key (PEM, from the Dashboard's API keys, *JWKS Public Key*), so a token is checked without a network call; literal `\n` is read as a newline |
+| `APP_ORIGIN`              | —                        | This app's own origin, e.g. `https://hunt.example`: the only origin a session token may be issued for (`azp`) |
+| `REQUIRE_SIGN_IN`         | `false`                  | `true` turns away play calls with no signed-in player (see [Rolling out sign-in](#rolling-out-sign-in)); needs the Clerk keys and `APP_ORIGIN` |
 | `TLS_KEY_PATH`            | —                        | Path to a TLS private key; must be set with `TLS_CERT_PATH`       |
 | `TLS_CERT_PATH`           | —                        | Path to a TLS certificate; must be set with `TLS_KEY_PATH`        |
 
@@ -660,6 +708,8 @@ src/
     designer.js         /designer's DOM, organiser key, design form, draft polling, review and publish wiring
     account-logic.js    pure return-path (same-origin only) and Clerk script URL logic, unit tested directly
     clerk.js            loads clerk-js from the instance's Frontend API, using GET /config
+    relay-auth.js       pure token-per-call, provisioning-retry-once and sign-in-required logic, unit tested directly
+    authorised-fetch.js fetch for the play relays: sends the player's token, wires relay-auth.js to Clerk
     account-menu.js     the account menu in the app bar of /play, /moderator and /designer
     auth-page.js        /sign-in and /sign-up: mounts Clerk's screens, returns to `redirect` afterwards
     api.js              /play's calls to this app's relays, with timeouts (and /challenge's check-in)

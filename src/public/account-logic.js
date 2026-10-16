@@ -77,3 +77,11 @@ export function clerkConfigured(config) {
 }
 
 export const NOT_SET_UP_TEXT = "Sign-in isn't set up yet.";
+
+/**
+ * True when /play must ask the player to sign in before joining: the app
+ * requires sign-in (GET /config) and they aren't signed in.
+ */
+export function joinNeedsSignIn(config, signedIn) {
+  return config?.requireSignIn === true && !signedIn;
+}

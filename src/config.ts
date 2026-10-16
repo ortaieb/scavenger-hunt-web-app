@@ -16,6 +16,14 @@ export interface Config {
   /** Clerk's public values for sign-in (see issue #65); unset until the instance exists. */
   clerkPublishableKey?: string;
   clerkFrontendApi?: string;
+  /** Needed by @clerk/express to check a player's session token (see issue #66). */
+  clerkSecretKey?: string;
+  /** Clerk's public key (PEM): with it, checking a token needs no network call. */
+  clerkJwtKey?: string;
+  /** This app's own origin, the only `azp` a session token may carry. */
+  appOrigin?: string;
+  /** Turn away play calls with no signed-in player, before they reach the game-server. */
+  requireSignIn: boolean;
 }
 
 const DEFAULT_PORT = 3000;
@@ -61,6 +69,36 @@ function resolveTls(env: NodeJS.ProcessEnv, deps: ConfigDeps): TlsConfig | undef
   return undefined;
 }
 
+function parseBoolean(name: string, value: string | undefined): boolean {
+  if (value === undefined || value === '') {
+    return false;
+  }
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  throw new Error(`Invalid ${name}: ${value} (expected true or false)`);
+}
+
+/** The origin of APP_ORIGIN (no path, no trailing slash), or a startup error. */
+function parseAppOrigin(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`Invalid APP_ORIGIN: ${value}`);
+  }
+  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.origin !== value.replace(/\/+$/, '')) {
+    throw new Error(`Invalid APP_ORIGIN: ${value} (expected an origin such as https://hunt.example)`);
+  }
+  return url.origin;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, deps: ConfigDeps = {}): Config {
   const port = env.PORT === undefined ? DEFAULT_PORT : Number(env.PORT);
 
@@ -74,6 +112,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, deps: ConfigDep
     throw new Error(`Invalid GAME_SERVER_TIMEOUT_MS: ${String(env.GAME_SERVER_TIMEOUT_MS)}`);
   }
 
+  const requireSignIn = parseBoolean('REQUIRE_SIGN_IN', env.REQUIRE_SIGN_IN);
+  const appOrigin = parseAppOrigin(env.APP_ORIGIN);
+  // A multi-line PEM often travels in one line with literal "\n"s.
+  const clerkJwtKey = env.CLERK_JWT_KEY ? env.CLERK_JWT_KEY.replace(/\\n/g, '\n') : undefined;
+  if (requireSignIn) {
+    // Failing at startup beats turning every player away (or letting every
+    // one in) because of a missing setting.
+    if (!env.CLERK_PUBLISHABLE_KEY || !env.CLERK_SECRET_KEY) {
+      throw new Error('REQUIRE_SIGN_IN needs CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY');
+    }
+    if (!appOrigin) {
+      throw new Error('REQUIRE_SIGN_IN needs APP_ORIGIN, the only origin a session token may be issued for');
+    }
+  }
+
   return {
     port,
     host: env.HOST ?? DEFAULT_HOST,
@@ -82,5 +135,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, deps: ConfigDep
     tls: resolveTls(env, deps),
     clerkPublishableKey: env.CLERK_PUBLISHABLE_KEY || undefined,
     clerkFrontendApi: env.CLERK_FRONTEND_API || undefined,
+    clerkSecretKey: env.CLERK_SECRET_KEY || undefined,
+    clerkJwtKey,
+    appOrigin,
+    requireSignIn,
   };
 }

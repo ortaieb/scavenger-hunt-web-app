@@ -68,6 +68,12 @@
         <h1>Join your team</h1>
         <p class="instruction" data-instruction></p>
 
+        <!-- Shown when the app requires sign-in and the player isn't signed in (issue #66). -->
+        <p id="join-sign-in" class="message message--warning" role="status" hidden>
+          Sign in before you join your team.
+          <a id="join-sign-in-link" href="/sign-in">Sign in</a>
+        </p>
+
         <form id="join-form" class="screen-body" novalidate>
           <label for="team-code" class="field-label">Team code</label>
           <input

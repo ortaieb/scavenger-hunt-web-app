@@ -2095,6 +2095,7 @@ describe('GET /config', () => {
     expect(response.body).toEqual({
       clerkPublishableKey: 'pk_test_abc',
       clerkFrontendApi: 'quiet-fox-12.clerk.accounts.dev',
+      requireSignIn: false,
     });
     expect(response.headers['cache-control']).toBe('no-store');
   });
@@ -2103,7 +2104,7 @@ describe('GET /config', () => {
     const response = await request(createApp(testConfig)).get('/config');
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ clerkPublishableKey: null, clerkFrontendApi: null });
+    expect(response.body).toEqual({ clerkPublishableKey: null, clerkFrontendApi: null, requireSignIn: false });
   });
 });
 

@@ -869,6 +869,14 @@ describe('playing a checkpoint', () => {
 });
 
 describe('finished, session over and errors (issue #43)', () => {
+  it('screenForError asks for a fresh sign-in on sign_in_required, staying on the screen', () => {
+    const result = screenForError(401, { detail: 'sign-in required', code: 'sign_in_required' });
+
+    expect(result.screen).toBeNull();
+    expect(result.message).toBe('Please sign in again to continue.');
+    expect(result.forgetIdentity).toBe(false);
+  });
+
   describe('screenForError maps every code to its screen', () => {
     it.each([
       ['session_not_started', 'lobby', "The session hasn't started yet."],

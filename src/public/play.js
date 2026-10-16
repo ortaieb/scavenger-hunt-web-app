@@ -7,7 +7,9 @@
 // whether permissions were granted once) and the latest GET /state, so a
 // reload, a locked screen or lost signal always lands back on the right one.
 
+import { accountHref } from './account-logic.js';
 import * as api from './api.js';
+import { mustSignInToJoin } from './authorised-fetch.js';
 import { checkProximity, createCamera, deviceHasMultipleCameras, getPosition, loadFacingMode, storeFacingMode } from './camera.js';
 import { describeAccuracyHint } from './challenge-logic.js';
 import {
@@ -74,6 +76,8 @@ const joinForm = el('join-form');
 const teamCodeInput = el('team-code');
 const consentInput = el('consent');
 const joinBtn = el('join-button');
+const joinSignInEl = el('join-sign-in');
+const joinSignInLink = el('join-sign-in-link');
 const joinErrorEl = el('join-error');
 const permissionsBtn = el('permissions-button');
 const permissionsAskEl = el('permissions-ask');
@@ -339,7 +343,21 @@ function renderLobby() {
 function updateJoinButton() {
   // consent is only ever the player's own tick (the box starts unticked),
   // so Join stays disabled until it's ticked.
-  joinBtn.disabled = normaliseTeamCode(teamCodeInput.value) === '' || !consentInput.checked;
+  joinBtn.disabled = joinNeedsSignInNow || normaliseTeamCode(teamCodeInput.value) === '' || !consentInput.checked;
+}
+
+// With sign-in required, a signed-out player is asked to sign in before they
+// join (issue #66), and comes back here, to the same link, afterwards.
+let joinNeedsSignInNow = false;
+
+async function askToSignInIfRequired() {
+  if (!(await mustSignInToJoin())) {
+    return;
+  }
+  joinNeedsSignInNow = true;
+  joinSignInLink.href = accountHref('sign-in', `${window.location.pathname}${window.location.search}`);
+  joinSignInEl.hidden = false;
+  updateJoinButton();
 }
 
 function showJoinError(message) {
@@ -997,3 +1015,4 @@ menuEl.addEventListener('toggle', () => {
 updateJoinButton();
 render();
 void refreshState();
+void askToSignInIfRequired();

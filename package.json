@@ -21,6 +21,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@clerk/express": "^2.1.79",
     "dotenv": "^18.0.4",
     "express": "^5.1.0",
     "leaflet": "^1.9.4",
