@@ -629,6 +629,19 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     await relayAuthorised(req, res, '/me/hunts', { noStore: true });
   });
 
+  // Delete account and profile (see issue #69): the game-server erases personal
+  // data and signs the player out. Personal data never logged or cached.
+  app.delete('/me', ...accountAuth, async (req: Request, res: ExpressResponse) => {
+    await relayAuthorised(req, res, '/me', { method: 'DELETE', noStore: true });
+  });
+
+  // Export the player's data (see issue #69): profile, hunts and consents as
+  // JSON, never cached. Sent in the content-type the game-server answers with
+  // and never logged.
+  app.get('/me/export', ...accountAuth, async (req: Request, res: ExpressResponse) => {
+    await relayAuthorised(req, res, '/me/export', { noStore: true });
+  });
+
   // A team's members' display names, for the team's own screens (never email
   // addresses; the game-server answers 404 to anyone outside the team).
   app.get('/members', ...accountAuth, async (req: Request, res: ExpressResponse) => {

@@ -60,6 +60,24 @@
         <h2>Your hunts</h2>
         <p id="hunts-empty" class="hint" hidden>You haven't played a hunt yet.</p>
         <ul id="hunts" class="hunts"></ul>
+
+        <h2>Your data</h2>
+        <div class="data-actions">
+          <button id="export-btn" type="button" class="button-secondary">Download my data</button>
+          <button id="delete-btn" type="button" class="button-secondary button-danger">Delete my data</button>
+        </div>
+
+        <dialog id="delete-dialog">
+          <div class="dialog-content">
+            <h3 id="delete-heading"></h3>
+            <p id="delete-message"></p>
+            <div id="delete-items"></div>
+            <form method="dialog" class="dialog-actions">
+              <button id="delete-cancel" type="button" class="button-secondary">Keep my data</button>
+              <button id="delete-confirm" type="button" class="button-danger">Delete everything</button>
+            </form>
+          </div>
+        </dialog>
       </div>
     </main>
 
