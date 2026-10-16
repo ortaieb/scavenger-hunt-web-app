@@ -118,3 +118,45 @@ export function readMemberNames(body) {
     ? list.map((member) => (typeof member?.displayName === 'string' ? member.displayName.trim() : '')).filter(Boolean)
     : [];
 }
+
+/** The text in the delete confirmation. */
+export const DELETE_CONFIRMATION_HEADING = 'Delete my data';
+
+export function deleteConfirmationBody() {
+  return {
+    heading: DELETE_CONFIRMATION_HEADING,
+    message: 'This erases your account, profile, and all your photos. Your team\'s results stay, without your name attached. This can\'t be undone.',
+    deletedItems: [
+      'Your account',
+      'Your name and home area',
+      'All your photos from every hunt',
+      'Your team memberships',
+    ],
+    keepItems: [
+      'Your teams\' final results, with no name or photos',
+    ],
+    confirmButton: 'Delete everything',
+    cancelButton: 'Keep my data',
+  };
+}
+
+/** The text to show while deleting. */
+export const DELETE_IN_PROGRESS = 'Erasing your data…';
+
+/** Error message if deletion fails. */
+export function deleteError(status) {
+  if (status === 0) {
+    return 'No signal. Check your connection and try again.';
+  }
+  if (status === 401) {
+    return 'You\'ve been signed out. Sign back in and try again.';
+  }
+  return 'Couldn\'t erase your data. Please try again.';
+}
+
+/** Save file name for exported data. */
+export function exportFileName() {
+  const now = new Date();
+  const date = now.toISOString().split('T')[0];
+  return `scavenger-hunt-export-${date}.json`;
+}

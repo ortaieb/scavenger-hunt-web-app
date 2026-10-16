@@ -82,7 +82,13 @@ We rely on the consent you give at sign-up. You can withdraw it at any time by [
 
 ### Your rights
 
-You can ask for a copy of your data, or ask us to delete it, at any time. If you're unhappy with how we've handled it, you can complain to the Information Commissioner's Office (ico.org.uk).
+**Download your data:** on your profile (/profile), tap **Download my data** to get a JSON file with your profile, hunts and consent history. You can download it whenever you like.
+
+**Delete your data:** on your profile, tap **Delete my data**. Your account, profile, and all your photos are erased and can't be recovered. Your teams' final results stay, but with no name or photos attached. Deletion usually takes a few minutes, but can take up to a month. Until it's fully done, you can sign back in.
+
+**Complain:** if you're unhappy with how we've handled your data, you can complain to the Information Commissioner's Office (ico.org.uk).
+
+Our backups keep all data while they last, then delete it automatically when they roll off our system — usually within 30 days.
 
 ### Other people
 

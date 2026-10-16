@@ -2,13 +2,18 @@
 // profile-logic.js; this reads and writes the DOM and calls this app's /me
 // relays with the signed-in player's token (authorised-fetch.js). Nothing
 // about the profile is stored in the browser.
+/* global Blob */
 
 import { accountHref } from './account-logic.js';
 import { accountStatus, authorisedFetch } from './authorised-fetch.js';
 import {
   consentBody,
   consentStatus,
+  deleteConfirmationBody,
+  DELETE_IN_PROGRESS,
+  deleteError,
   DISPLAY_NAME_MAX,
+  exportFileName,
   profileBody,
   profileError,
   readHunts,
@@ -30,6 +35,14 @@ const saveBtn = el('save');
 const saveMessage = el('save-message');
 const consentInput = el('upcoming-hunts');
 const consentStatusEl = el('consent-status');
+const exportBtn = el('export-btn');
+const deleteBtn = el('delete-btn');
+const deleteDialog = el('delete-dialog');
+const deleteCancel = el('delete-cancel');
+const deleteConfirm = el('delete-confirm');
+const deleteHeading = el('delete-heading');
+const deleteMessage = el('delete-message');
+const deleteItems = el('delete-items');
 
 async function call(url, init = {}) {
   const controller = new AbortController();
@@ -124,6 +137,90 @@ consentInput.addEventListener('change', async () => {
     consentStatusEl.textContent = `${profileError(status, null)} Your choice wasn't saved.`;
   }
 });
+
+exportBtn.addEventListener('click', async () => {
+  exportBtn.disabled = true;
+  const { status, body } = await call('/me/export');
+  exportBtn.disabled = false;
+  if (status !== 200) {
+    setSaveMessage(profileError(status, body));
+    return;
+  }
+  const blob = new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = exportFileName();
+  link.click();
+  URL.revokeObjectURL(url);
+});
+
+deleteBtn.addEventListener('click', () => {
+  const content = deleteConfirmationBody();
+  deleteHeading.textContent = content.heading;
+  deleteMessage.textContent = content.message;
+  deleteItems.replaceChildren(
+    createDeleteItemsContent(content.deletedItems, content.keepItems),
+  );
+  deleteCancel.textContent = content.cancelButton;
+  deleteConfirm.textContent = content.confirmButton;
+  deleteDialog.showModal();
+});
+
+deleteCancel.addEventListener('click', (e) => {
+  e.preventDefault();
+  deleteDialog.close();
+});
+
+deleteConfirm.addEventListener('click', async (e) => {
+  e.preventDefault();
+  deleteConfirm.disabled = true;
+  deleteCancel.disabled = true;
+  deleteConfirm.textContent = DELETE_IN_PROGRESS;
+  const { status } = await call('/me', { method: 'DELETE' });
+  deleteConfirm.disabled = false;
+  deleteCancel.disabled = false;
+  if (status < 200 || status >= 300) {
+    deleteConfirm.textContent = deleteConfirmationBody().confirmButton;
+    setSaveMessage(deleteError(status));
+    return;
+  }
+  deleteDialog.close();
+  window.location.replace(accountHref('sign-in', '/play'));
+});
+
+function createDeleteItemsContent(deleted, kept) {
+  const container = document.createElement('div');
+  const deletedSection = document.createElement('div');
+  deletedSection.className = 'delete-list';
+  const deletedHeading = document.createElement('h4');
+  deletedHeading.textContent = 'Deleted:';
+  const deletedList = document.createElement('ul');
+  deleted.forEach((item) => {
+    const li = document.createElement('li');
+    li.textContent = item;
+    deletedList.appendChild(li);
+  });
+  deletedSection.appendChild(deletedHeading);
+  deletedSection.appendChild(deletedList);
+  
+  const keptSection = document.createElement('div');
+  keptSection.className = 'delete-list';
+  const keptHeading = document.createElement('h4');
+  keptHeading.textContent = 'Kept:';
+  const keptList = document.createElement('ul');
+  kept.forEach((item) => {
+    const li = document.createElement('li');
+    li.textContent = item;
+    keptList.appendChild(li);
+  });
+  keptSection.appendChild(keptHeading);
+  keptSection.appendChild(keptList);
+  
+  container.appendChild(deletedSection);
+  container.appendChild(keptSection);
+  return container;
+}
 
 async function start() {
   const status = await accountStatus();

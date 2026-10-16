@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { deleteConfirmationBody, deleteError, exportFileName } from '../src/public/profile-logic.js';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
 import {
@@ -129,3 +130,54 @@ describe('reading the answers', () => {
     expect(profileError(422, { errors: { homeArea: 'bad' } })).toContain('homeArea');
   });
 });
+
+describe('DELETE /me and GET /me/export', () => {
+  it('DELETE /me relays with the token, uncached, and passes the status through', async () => {
+    const fetchMock = upstream();
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .delete('/me')
+      .set('Authorization', 'Bearer tok');
+
+    const [url, init] = fetchMock.mock.calls[0]! as [URL, NonNullable<FetchInit>];
+    expect(url.href).toBe('http://game-server.test/me');
+    expect(init.method).toBe('DELETE');
+    expect((init.headers as Record<string, string>).authorization).toBe('Bearer tok');
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+
+  it('GET /me/export relays with the token, uncached', async () => {
+    const fetchMock = upstream();
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .get('/me/export')
+      .set('Authorization', 'Bearer tok');
+
+    const [url, init] = fetchMock.mock.calls[0]! as [URL, NonNullable<FetchInit>];
+    expect(url.href).toBe('http://game-server.test/me/export');
+    expect(init.method).toBe('GET');
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+});
+
+describe('delete and export logic', () => {
+  it('builds the delete confirmation', () => {
+    const content = deleteConfirmationBody();
+    expect(content.heading).toBe('Delete my data');
+    expect(content.message).toContain('account');
+    expect(content.deletedItems.length).toBeGreaterThan(0);
+    expect(content.keepItems.length).toBeGreaterThan(0);
+  });
+
+  it('generates an export file name with today\'s date', () => {
+    const name = exportFileName();
+    expect(name).toMatch(/^scavenger-hunt-export-\d{4}-\d{2}-\d{2}\.json$/);
+  });
+
+  it('explains delete errors', () => {
+    expect(deleteError(0)).toContain('signal');
+    expect(deleteError(401)).toContain('signed out');
+    expect(deleteError(500)).toContain('erase');
+  });
+});
+
+// Import the new functions
+
