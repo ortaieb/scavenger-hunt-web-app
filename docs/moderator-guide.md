@@ -6,9 +6,13 @@ The planned times are only a guide: nothing starts or ends until you do it.
 ![The moderator screen during the game](images/moderator-running.png)
 
 1. **Open the moderator link** on a phone or a laptop:
-   `/moderator?session=<session id>`. Enter the **moderator code**. It's kept
-   only in that browser tab and forgotten when the tab closes, so keep the
-   tab open during the game. **Forget code** signs you out.
+   `/moderator?session=<session id>`, and **sign in with your account**. The
+   hunt's organiser is its moderator already, and can add others (see
+   [Moderators](#moderators)). Nothing is typed or kept on the page; the
+   account menu at the top signs you out. If the page says *This account
+   isn't a moderator of this hunt*, you're signed in with an account that
+   hasn't been added: ask the organiser to add the email address you signed
+   up with.
 2. **Start the session** when the teams are ready, early or late. Confirm,
    and teams can check in and send photos from then on. Until you start,
    their phones show the lobby.
@@ -64,15 +68,34 @@ An approved photo takes the team's place at that checkpoint by **when it
 was sent**, not when you approved it. Teams aren't told which photo you
 ruled on: their points update on their phones within a few seconds.
 
-The photos are shown only on this screen, with your code, and the browser
-doesn't keep them.
+The photos are shown only on this screen, to you, and the browser doesn't
+keep them.
+
+## Moderators
+
+At the bottom of the screen, **Moderators** adds someone else who can run
+this session. Type the **email address they signed up with** and tap **Add
+moderator**. They can then open the moderator link with their own account.
+
+- *No account with that email address: ask them to sign up first.* They need
+  to sign up, from the **Sign in** link in the app, before you can add them.
+- *That account isn't an organiser, so it can't moderate.* Only organisers
+  and admins can moderate. Ask an admin to make them an organiser.
+- *This account can't change this hunt's moderators.* Only an admin, or an
+  organiser who moderates this hunt, can add and remove moderators.
+
+The people you add on this visit are listed with **Remove**. The list isn't
+kept: leave the page and it's empty again, although they're still moderators.
+Removing someone you added earlier isn't possible from this screen yet.
 
 ### Overriding the referee
 
 The screen shows only the photos the referee wasn't sure about. To overturn
 a photo it **passed** or **failed**, ask the game-server directly. You'll
-need its address from the organiser. Type the code at the prompt, so it
-doesn't end up in your shell history:
+need its address from the organiser. This still uses the session's
+moderator code, which the game-server keeps only until it retires the codes
+in favour of accounts, so ask the organiser whether it's still available.
+Type the code at the prompt, so it doesn't end up in your shell history:
 
 ```sh
 GAME_SERVER=https://<game-server address>

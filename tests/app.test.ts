@@ -96,12 +96,22 @@ describe('GET /moderator', () => {
     expect(response.text).toContain('<script type="module" src="/moderator.js"></script>');
   });
 
-  it('asks for the code in a form that never puts it in a URL', async () => {
+  it('signs in with an account: no code to type, an account menu, and a link to sign in', async () => {
     const response = await request(createApp(testConfig)).get('/moderator');
 
-    // POST, so even without JavaScript the code isn't sent as a query string.
-    expect(response.text).toMatch(/<form id="sign-in-form" method="post"/);
-    expect(response.text).toMatch(/id="moderator-code"[\s\S]*?type="password"/);
+    expect(response.text).not.toContain('moderator-code');
+    expect(response.text).not.toContain('type="password"');
+    expect(response.text).not.toContain('id="sign-out"');
+    expect(response.text).toContain('id="account"');
+    expect(response.text).toContain('id="sign-in-link"');
+  });
+
+  it('lets a moderator add others by email address, in a form that never puts it in a URL', async () => {
+    const response = await request(createApp(testConfig)).get('/moderator');
+
+    expect(response.text).toContain('id="moderators-title"');
+    expect(response.text).toMatch(/<form id="moderator-form" novalidate>/);
+    expect(response.text).toMatch(/id="moderator-email"[\s\S]*?type="email"/);
   });
 
   it('has the review queue at the top, and Recently decided', async () => {
@@ -121,18 +131,19 @@ describe.each(['/moderator.js', '/moderator-logic.js', '/moderator.css'])('GET %
   });
 });
 
-describe('the moderator code', () => {
-  it.each(['/moderator.js', '/moderator-logic.js'])('is never kept in localStorage by %s', async (asset) => {
+describe("the moderator page's sign-in", () => {
+  it.each(['/moderator.js', '/moderator-logic.js'])('keeps nothing in browser storage in %s', async (asset) => {
     const response = await request(createApp(testConfig)).get(asset);
 
     expect(response.text).not.toContain('localStorage');
+    expect(response.text).not.toContain('sessionStorage');
   });
 
-  it('is kept in sessionStorage and sent only as a Bearer token', async () => {
+  it('sends the account\'s token through authorised-fetch.js, never a header of its own', async () => {
     const response = await request(createApp(testConfig)).get('/moderator.js');
 
-    expect(response.text).toContain('sessionStorage.setItem');
-    expect(response.text).toContain('authorization: `Bearer ${');
+    expect(response.text).toContain('authorisedFetch(');
+    expect(response.text).not.toContain('authorization:');
   });
 
   it.each(['/moderator.js', '/moderator-logic.js'])(
@@ -144,7 +155,7 @@ describe('the moderator code', () => {
     },
   );
 
-  it('fetches photos with the code and shows them through object URLs it revokes', async () => {
+  it('fetches photos with the token and shows them through object URLs it revokes', async () => {
     const response = await request(createApp(testConfig)).get('/moderator.js');
 
     expect(response.text).toContain('URL.createObjectURL');
@@ -168,11 +179,25 @@ describe('GET /designer', () => {
     expect(response.text).toContain('<script type="module" src="/designer.js"></script>');
   });
 
-  it('asks for the key, and posts the design form, in forms that never put them in a URL', async () => {
+  it('signs in with an account: no key to type, an account menu, and a link to sign in', async () => {
     const response = await request(createApp(testConfig)).get('/designer');
 
-    expect(response.text).toMatch(/<form id="sign-in-form" method="post"/);
-    expect(response.text).toMatch(/id="organiser-key"[\s\S]*?type="password"/);
+    expect(response.text).not.toContain('organiser-key');
+    expect(response.text).not.toContain('type="password"');
+    expect(response.text).not.toContain('id="sign-out"');
+    expect(response.text).toContain('id="account"');
+    expect(response.text).toContain('id="sign-in-link"');
+  });
+
+  it('does not show the moderator code of a published hunt', async () => {
+    const response = await request(createApp(testConfig)).get('/designer');
+
+    expect(response.text).not.toContain('moderator-code');
+  });
+
+  it('posts the design form and the publish form in forms that never put them in a URL', async () => {
+    const response = await request(createApp(testConfig)).get('/designer');
+
     expect(response.text).toMatch(/<form id="design-form" method="post"/);
     expect(response.text).toMatch(/<form id="publish-form" method="post"/);
   });
@@ -228,18 +253,19 @@ describe('Leaflet, for the designer\'s map', () => {
   });
 });
 
-describe('the organiser key', () => {
-  it.each(['/designer.js', '/designer-logic.js'])('is never kept in localStorage by %s', async (asset) => {
+describe("the designer page's sign-in", () => {
+  it.each(['/designer.js', '/designer-logic.js'])('keeps nothing in browser storage in %s', async (asset) => {
     const response = await request(createApp(testConfig)).get(asset);
 
     expect(response.text).not.toContain('localStorage');
+    expect(response.text).not.toContain('sessionStorage');
   });
 
-  it('is kept in sessionStorage and sent only as a Bearer token', async () => {
+  it('sends the account\'s token through authorised-fetch.js, never a header of its own', async () => {
     const response = await request(createApp(testConfig)).get('/designer.js');
 
-    expect(response.text).toContain('sessionStorage.setItem');
-    expect(response.text).toContain('authorization: `Bearer ${');
+    expect(response.text).toContain('authorisedFetch(');
+    expect(response.text).not.toContain('authorization:');
   });
 
   it.each(['/designer.js', '/designer-logic.js'])('is never logged by %s, nor anything from a draft', async (asset) => {
@@ -2122,6 +2148,114 @@ describe('the sign-in and sign-up pages', () => {
 
     expect(response.text).toContain('id="account"');
     expect(response.text).toContain('/account-menu.js');
+  });
+});
+
+describe('the moderators relays (issue #67)', () => {
+  const AUTH = 'Bearer a-clerk-token';
+  const added = { session: VALID_SESSION, pid: 'p_8f3a' };
+
+  it('POST /moderator/moderators sends only { email } to the session, with the Authorization header, uncached', async () => {
+    const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(201, added)));
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/moderator/moderators')
+      .set('Authorization', AUTH)
+      .send({ session: VALID_SESSION, email: 'bob@example.com', extra: 'dropped' });
+
+    const [url, init] = vi.mocked(fetchMock).mock.calls[0]!;
+    expect((url as URL).href).toBe(`http://game-server.test/sessions/${VALID_SESSION}/moderators`);
+    expect(init?.method).toBe('POST');
+    expect(init?.headers).toEqual({ authorization: AUTH, 'content-type': 'application/json' });
+    expect(JSON.parse(init?.body as string)).toEqual({ email: 'bob@example.com' });
+    expect(response.status).toBe(201);
+    expect(response.body).toEqual(added);
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+
+  it.each([
+    [200, added],
+    [404, { detail: 'no account', code: 'no_account' }],
+    [409, { detail: 'not an organiser', code: 'not_an_organiser' }],
+    [403, { detail: 'forbidden', code: 'forbidden' }],
+  ])('POST /moderator/moderators passes a %i through unchanged', async (status, body) => {
+    const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(status, body)));
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/moderator/moderators')
+      .set('Authorization', AUTH)
+      .send({ session: VALID_SESSION, email: 'bob@example.com' });
+
+    expect(response.status).toBe(status);
+    expect(response.body).toEqual(body);
+  });
+
+  it('POST /moderator/moderators rejects a session that is not a UUID, and sends nothing upstream', async () => {
+    const fetchMock: typeof fetch = vi.fn();
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .post('/moderator/moderators')
+      .send({ session: 'nope', email: 'bob@example.com' });
+
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /moderator/moderators removes the person by pid, and passes the 204 back', async () => {
+    const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })));
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .delete(`/moderator/moderators?session=${VALID_SESSION}&pid=p_8f3a`)
+      .set('Authorization', AUTH);
+
+    const [url, init] = vi.mocked(fetchMock).mock.calls[0]!;
+    expect((url as URL).href).toBe(`http://game-server.test/sessions/${VALID_SESSION}/moderators/p_8f3a`);
+    expect(init?.method).toBe('DELETE');
+    expect(init?.headers).toEqual({ authorization: AUTH });
+    expect(init?.body).toBeUndefined();
+    expect(response.status).toBe(204);
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+
+  it('DELETE /moderator/moderators passes a 404 not_a_moderator through', async () => {
+    const body = { detail: 'not a moderator', code: 'not_a_moderator' };
+    const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(404, body)));
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock }))
+      .delete(`/moderator/moderators?session=${VALID_SESSION}&pid=p_8f3a`)
+      .set('Authorization', AUTH);
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual(body);
+  });
+
+  it.each([
+    ['a session that is not a UUID', `session=nope&pid=p_8f3a`],
+    ['no pid', `session=${VALID_SESSION}`],
+    ['a pid with a path in it', `session=${VALID_SESSION}&pid=${encodeURIComponent('../x')}`],
+  ])('DELETE /moderator/moderators rejects %s with 400, and sends nothing upstream', async (_label, query) => {
+    const fetchMock: typeof fetch = vi.fn();
+
+    const response = await request(createApp(testConfig, { fetch: fetchMock })).delete(`/moderator/moderators?${query}`);
+
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('never logs the email address, the token or the pid', async () => {
+    const logs = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => undefined),
+    );
+    const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(201, added)));
+    const app = createApp(testConfig, { fetch: fetchMock });
+
+    await request(app).post('/moderator/moderators').set('Authorization', AUTH).send({ session: VALID_SESSION, email: 'NEVERLOG@example.com' });
+    await request(app).delete(`/moderator/moderators?session=${VALID_SESSION}&pid=p_8f3a`).set('Authorization', AUTH);
+
+    for (const log of logs) {
+      expect(log).not.toHaveBeenCalled();
+      log.mockRestore();
+    }
   });
 });
 

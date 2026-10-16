@@ -333,12 +333,20 @@ export function newestBlocked(blocked) {
 }
 
 /**
- * @typedef {{ message: string, askForCode: boolean, offline: boolean }} ModeratorError
+ * @typedef {{ message: string, signInAgain: boolean, forbidden: boolean, offline: boolean }} ModeratorError
  */
 
+/** @returns {ModeratorError} */
+function failure(message, flags = {}) {
+  return { message, signInAgain: false, forbidden: false, offline: false, ...flags };
+}
+
+export const NOT_A_MODERATOR = "This account isn't a moderator of this hunt.";
+
 /**
- * What a failed call to the moderator relays means for the screen. A 401 is
- * a wrong (or missing) code: ask again.
+ * What a failed call to the moderator relays means for the screen. A 401 is a
+ * sign-in the game-server didn't accept: sign in again. A 403 is a valid
+ * account that doesn't moderate this hunt (issue #67).
  *
  * @param {number} status 0 for a call that never came back
  * @param {unknown} body
@@ -347,24 +355,85 @@ export function newestBlocked(blocked) {
 export function moderatorError(status, body) {
   const code = body && typeof body === 'object' && 'code' in body ? body.code : undefined;
   if (status === 401) {
-    return { message: "That code isn't right for this session.", askForCode: true, offline: false };
+    return failure("Your sign-in wasn't accepted. Sign out from the account menu and sign in again.", {
+      signInAgain: true,
+    });
+  }
+  if (status === 403) {
+    return failure(NOT_A_MODERATOR, { forbidden: true });
   }
   if (status === 404) {
-    return { message: 'No session with this id. Check the link.', askForCode: false, offline: false };
+    return failure('No session with this id. Check the link.');
   }
   if (code === 'session_stopped') {
-    return { message: 'The session has already finished.', askForCode: false, offline: false };
+    return failure('The session has already finished.');
   }
   if (code === 'session_not_started') {
-    return { message: "The session hasn't been started yet.", askForCode: false, offline: false };
+    return failure("The session hasn't been started yet.");
   }
   if (status === 400) {
-    return { message: 'The link has no valid session id.', askForCode: false, offline: false };
+    return failure('The link has no valid session id.');
   }
   if (status === 0 || status === 502 || status === 503 || status === 504) {
-    return { message: "No connection to the game server. Retrying…", askForCode: false, offline: true };
+    return failure('No connection to the game server. Retrying…', { offline: true });
   }
-  return { message: `Something went wrong (error ${status}).`, askForCode: false, offline: false };
+  return failure(`Something went wrong (error ${status}).`);
+}
+
+/**
+ * Checks an email address before it's sent: the game-server alone decides
+ * whether there's an account, so this only catches what's plainly not one.
+ *
+ * @param {string} value
+ * @returns {{ email: string, problem: string }}
+ */
+export function checkModeratorEmail(value) {
+  const email = value.trim();
+  if (email === '' || !/^[^\s@]+@[^\s@]+$/.test(email)) {
+    return { email, problem: 'Enter the email address they signed up with.' };
+  }
+  return { email, problem: '' };
+}
+
+/**
+ * What a failed add or remove of a moderator means (issue #67). The 404 is
+ * the game-server's "no account with that email address", or on a remove,
+ * a person who isn't a moderator any more.
+ *
+ * @param {number} status 0 for a call that never came back
+ * @param {unknown} body
+ * @param {'add' | 'remove'} action
+ * @returns {ModeratorError}
+ */
+export function moderatorsError(status, body, action) {
+  if (status === 404 && action === 'add') {
+    return failure('No account with that email address: ask them to sign up first.');
+  }
+  if (status === 404) {
+    return failure("They aren't a moderator of this hunt any more.");
+  }
+  if (status === 409) {
+    return failure("That account isn't an organiser, so it can't moderate. Ask an admin to make them one.");
+  }
+  if (status === 403) {
+    return failure("This account can't change this hunt's moderators.");
+  }
+  if (status === 400 || status === 422) {
+    return failure('Enter the email address they signed up with.');
+  }
+  return moderatorError(status, body);
+}
+
+/**
+ * The person an add answered with (`{session, pid}`), or null. Only the pid
+ * is kept: it's what removes them again.
+ *
+ * @param {unknown} body
+ * @returns {string | null}
+ */
+export function addedModeratorPid(body) {
+  const pid = body && typeof body === 'object' && 'pid' in body ? body.pid : undefined;
+  return typeof pid === 'string' && /^[\w-]{1,100}$/.test(pid) ? pid : null;
 }
 
 /**

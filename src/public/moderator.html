@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#111318" />
-    <!-- The moderator code is never put in a URL; don't leak this one either. -->
+    <!-- The URL holds a session id and nothing secret; don't leak even that. -->
     <meta name="referrer" content="no-referrer" />
     <title>Scavenger Hunt — Moderator</title>
     <link rel="stylesheet" href="/play.css" />
@@ -14,10 +14,7 @@
     <header class="top">
       <div class="app-bar">
         <span class="app-name">Scavenger Hunt · Moderator</span>
-        <div class="app-actions">
-          <div id="account"></div>
-          <button id="sign-out" type="button" class="button-secondary sign-out" hidden>Forget code</button>
-        </div>
+        <div id="account"></div>
       </div>
       <div id="connection" class="message message--warning connection" role="status" hidden>
         <span id="connection-text"></span>
@@ -33,26 +30,13 @@
         </p>
       </section>
 
-      <!-- Sign in: the code is typed once and kept for this tab only. -->
+      <!-- Not signed in, not a moderator of this hunt, or nothing to show yet
+           (issue #67): the account menu above is how to sign in and out. -->
       <section id="sign-in" class="panel" hidden>
-        <h1>Moderator sign-in</h1>
-        <!-- POST, so even without JavaScript the code never lands in a URL. -->
-        <form id="sign-in-form" method="post" action="/moderator/sign-in" novalidate>
-          <label for="moderator-code" class="field-label">Moderator code</label>
-          <input
-            id="moderator-code"
-            name="code"
-            type="password"
-            autocomplete="off"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            required
-          />
-          <p class="note">Kept only in this tab, and forgotten when it closes.</p>
-          <p id="sign-in-error" class="message message--error" role="alert" hidden></p>
-          <button id="sign-in-button" type="submit">Sign in</button>
-        </form>
+        <h1>Moderator</h1>
+        <p id="sign-in-error" class="message message--error" role="alert" hidden></p>
+        <p id="sign-in-text"></p>
+        <p><a id="sign-in-link" class="account-link" href="/sign-in" hidden>Sign in</a></p>
       </section>
 
       <!-- The session -->
@@ -91,6 +75,32 @@
           <h2 id="blocked-title">Blocked outside the session</h2>
           <ul id="blocked" class="blocked"></ul>
           <p id="blocked-empty" class="note">Nobody has tried yet.</p>
+        </section>
+
+        <!-- Who else can moderate this session (issue #67). Added by the
+             email address they signed up with; kept in memory only. -->
+        <section class="panel" aria-labelledby="moderators-title">
+          <h2 id="moderators-title">Moderators</h2>
+          <p class="note">
+            Add another organiser by the email address they signed up with. They can then open this page with their
+            own account.
+          </p>
+          <form id="moderator-form" novalidate>
+            <label for="moderator-email" class="field-label">Email address</label>
+            <input
+              id="moderator-email"
+              name="email"
+              type="email"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+            />
+            <p id="moderator-error" class="message message--error" role="alert" hidden></p>
+            <button id="moderator-add" type="submit">Add moderator</button>
+          </form>
+          <ul id="moderator-added" class="moderators" hidden></ul>
+          <p class="note">Moderators you add here are listed so you can remove them. The list isn't kept when you leave.</p>
         </section>
       </div>
     </main>
