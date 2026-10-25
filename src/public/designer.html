@@ -82,6 +82,14 @@
                 Read each checkpoint the designer chose, fix what's wrong, then accept or reject it. Only the
                 accepted ones go into the hunt.
               </p>
+              <!-- A hunt placed by hand: a pin can't move once the draft exists,
+                   so this fills a new builder from it. -->
+              <div id="edit-in-builder-block" class="edit-in-builder" hidden>
+                <button id="edit-in-builder" type="button" class="button-secondary">Edit in builder</button>
+                <p class="field-hint">
+                  Opens the builder filled in from this draft. Sending it makes a new draft; this one stays as it is.
+                </p>
+              </div>
               <ol id="cards" class="cards"></ol>
 
               <div id="review-summary" class="review-summary" role="status">
@@ -185,6 +193,17 @@
 
         <section class="panel" aria-labelledby="new-design-title">
           <h2 id="new-design-title">New design</h2>
+          <fieldset class="mode-choice">
+            <legend class="visually-hidden">Who chooses the places</legend>
+            <label class="mode-option">
+              <input type="radio" name="design-mode" value="agent" checked />
+              <span>Let the designer choose</span>
+            </label>
+            <label class="mode-option">
+              <input type="radio" name="design-mode" value="manual" />
+              <span>Place them myself</span>
+            </label>
+          </fieldset>
           <!-- POST, so even without JavaScript nothing typed lands in a URL. -->
           <form id="design-form" method="post" action="/designer" novalidate>
             <label for="area" class="field-label">Area</label>
@@ -255,6 +274,68 @@
             </p>
             <button id="design-button" type="submit">Start design</button>
             <p class="note">It takes a few minutes. You can follow it here, or close the page and come back.</p>
+          </form>
+
+          <!-- The builder (issue #78): the organiser places the checkpoints. Kept
+               in memory only, so a reload starts again. -->
+          <form id="builder-form" method="post" action="/designer" novalidate hidden>
+            <label for="builder-area" class="field-label">Area</label>
+            <input
+              id="builder-area"
+              type="text"
+              maxlength="200"
+              autocomplete="off"
+              placeholder="Chiswick, London"
+              aria-describedby="builder-area-error"
+            />
+            <p id="builder-area-error" class="field-error" hidden></p>
+
+            <label for="builder-theme" class="field-label">Theme</label>
+            <input
+              id="builder-theme"
+              type="text"
+              maxlength="200"
+              autocomplete="off"
+              placeholder="Riverside pubs"
+              aria-describedby="builder-theme-error"
+            />
+            <p id="builder-theme-error" class="field-error" hidden></p>
+
+            <label for="builder-max-walk-km" class="field-label">Longest walk (km)</label>
+            <input
+              id="builder-max-walk-km"
+              type="number"
+              inputmode="decimal"
+              min="0.5"
+              max="10"
+              step="0.5"
+              aria-describedby="builder-max-walk-hint builder-max-walk-km-error"
+            />
+            <p id="builder-max-walk-hint" class="field-hint">0.5 to 10, the whole loop</p>
+            <p id="builder-max-walk-km-error" class="field-error" hidden></p>
+
+            <h3 class="builder-title">Checkpoints, in route order</h3>
+            <p class="note">
+              3 to 8. Select a checkpoint, then tap the map to drop its pin, or drag a pin to adjust it. Standing at
+              the place? Use your location.
+            </p>
+            <div id="builder-map-block" class="map-block">
+              <div id="builder-map" class="route-map"></div>
+              <p id="builder-map-note" class="message message--note map-note" role="status" hidden></p>
+            </div>
+            <p id="builder-loop" class="builder-loop" role="status"></p>
+            <ol id="builder-cards" class="cards"></ol>
+            <p id="builder-list-error" class="field-error" hidden></p>
+            <button id="builder-add" type="button" class="button-secondary">Add a checkpoint</button>
+
+            <div id="builder-error" class="message message--error" role="alert" hidden>
+              <span id="builder-error-text"></span>
+              <ul id="builder-error-lines" class="problems"></ul>
+            </div>
+            <button id="builder-button" type="submit">Create draft</button>
+            <p class="note">
+              The draft is checked at once. Then you review each checkpoint and publish it, as with a designed hunt.
+            </p>
           </form>
         </section>
 

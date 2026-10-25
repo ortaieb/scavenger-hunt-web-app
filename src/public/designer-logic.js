@@ -7,7 +7,10 @@
 // problem is about, the review counts and the loop over the accepted
 // checkpoints, the "can publish" rule, and the publish form. So does what the
 // route map (issue #61) draws: the area's box, a marker per checkpoint styled
-// by its review, the loop through them, and the view that fits it all.
+// by its review, the loop through them, and the view that fits it all. So
+// does the hunt builder (issue #78), where an organiser places the
+// checkpoints by hand: its form, its limits, the loop as it grows, and what
+// the map draws for it.
 //
 // A draft's clues, scenes and coordinates are the answers to its hunt, and
 // a publication's codes are credentials: this file only shapes them for the
@@ -65,6 +68,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  *   'finished-at'?: string | null,
  *   checkpoints?: number,
  *   'cost-usd'?: number,
+ *   runner?: string,
  * }} DraftListItem
  */
 
@@ -86,6 +90,20 @@ export function isDraftId(value) {
 export function readDraftId(searchParams) {
   const draft = searchParams.get('draft');
   return isDraftId(draft) ? draft : null;
+}
+
+/** The `run.runner` (and list `runner`) of a draft the organiser placed by hand. */
+const MANUAL_RUNNER = 'manual';
+
+/** What a hunt placed by hand says in place of a run's time, turns and cost. */
+export const BY_HAND_WORDS = 'Placed by hand';
+
+/**
+ * @param {Draft | null | undefined} draft
+ * @returns {boolean} whether the organiser placed its checkpoints by hand
+ */
+export function isManual(draft) {
+  return draft?.run?.runner === MANUAL_RUNNER;
 }
 
 // --- New design ----------------------------------------------------------------
@@ -294,18 +312,21 @@ export function whenWords(isoTime) {
 
 /**
  * One row of the drafts list: its status, area, theme, when it was
- * started, and its cost once it's finished.
+ * started, and its cost once it's finished. A hunt placed by hand
+ * (`runner: "manual"`) costs nothing, so it says how it was made instead.
  *
  * @param {DraftListItem} draft
- * @returns {{ status: string, area: string, theme: string, when: string, cost: string }}
+ * @returns {{ status: string, area: string, theme: string, when: string, cost: string, byHand: boolean }}
  */
 export function draftListLine(draft) {
+  const byHand = draft.runner === MANUAL_RUNNER;
   return {
     status: statusLabel(draft.status),
     area: typeof draft.area === 'string' ? draft.area : '',
     theme: typeof draft.theme === 'string' ? draft.theme : '',
     when: whenWords(draft['created-at']),
-    cost: draft.status === 'running' ? '' : costWords(draft['cost-usd']),
+    cost: draft.status === 'running' || byHand ? '' : costWords(draft['cost-usd']),
+    byHand,
   };
 }
 
@@ -380,7 +401,8 @@ export function elapsedLine(draft, serverNow) {
 /**
  * How long a finished draft's run took, its turns and what it cost: "Took
  * 3:41 · 23 turns · cost $0.42". The stub runner takes no turns, so none are
- * shown for it. '' while it's running.
+ * shown for it. "Placed by hand" for a hunt the organiser laid out, which has
+ * no run. '' while it's running.
  *
  * @param {Draft | null | undefined} draft
  * @returns {string}
@@ -388,6 +410,9 @@ export function elapsedLine(draft, serverNow) {
 export function runLine(draft) {
   if (!draft || isRunning(draft)) {
     return '';
+  }
+  if (isManual(draft)) {
+    return BY_HAND_WORDS;
   }
   const parts = [];
   const durationMs = draft.run?.['duration-ms'];
@@ -776,7 +801,8 @@ export function reviewCards(draft) {
   return inRouteOrder(draft).map((checkpoint) => ({
     position: checkpoint.position,
     name: textOf(checkpoint.place?.name),
-    kind: kindWords(checkpoint.place?.kind),
+    // A placed-by-hand pin's kind is only "manual": nothing to say about it.
+    kind: isManual(draft) ? '' : kindWords(checkpoint.place?.kind),
     rationale: textOf(checkpoint.rationale),
     osmUrl: osmUrl(textOf(checkpoint.place?.osm)),
     review: reviewOf(checkpoint),
@@ -1247,6 +1273,311 @@ export function publicationView(body) {
   };
 }
 
+// --- the hunt builder -----------------------------------------------------------------
+
+/** The game-server's limits for a hunt placed by hand. */
+export const BUILDER_LIMITS = Object.freeze({
+  checkpoints: { min: 3, max: 8 },
+  maxWalkKm: { min: 0.5, max: 10, default: 10 },
+  name: { min: 1, max: 100 },
+  proximityDefault: 30,
+});
+
+/**
+ * @typedef {{
+ *   name: string,
+ *   clue: string,
+ *   scene: string,
+ *   pose: string,
+ *   proximity: string,
+ *   location: Location | null,
+ * }} BuilderCheckpoint a checkpoint's fields as typed, and its pin once placed
+ * @typedef {{
+ *   area: string,
+ *   theme: string,
+ *   maxWalkKm: string,
+ *   checkpoints: BuilderCheckpoint[],
+ * }} Builder
+ * @typedef {Partial<Record<'name' | 'location' | EditField, string>>} BuilderCardErrors
+ * @typedef {{
+ *   area?: string,
+ *   theme?: string,
+ *   maxWalkKm?: string,
+ *   checkpoints?: string,
+ *   cards: BuilderCardErrors[],
+ * }} BuilderErrors
+ * @typedef {{
+ *   name: string,
+ *   location: Location,
+ *   clue: string,
+ *   scene: string,
+ *   pose: string,
+ *   proximity: number,
+ * }} ManualCheckpointRequest
+ * @typedef {{
+ *   area: string,
+ *   theme: string,
+ *   'max-walk-km': number,
+ *   checkpoints: ManualCheckpointRequest[],
+ * }} ManualRequest
+ */
+
+/** @returns {BuilderCheckpoint} */
+export function blankCheckpoint() {
+  return { name: '', clue: '', scene: '', pose: '', proximity: String(BUILDER_LIMITS.proximityDefault), location: null };
+}
+
+/**
+ * An empty builder, with the fewest checkpoints a hunt can have.
+ *
+ * @returns {Builder}
+ */
+export function newBuilder() {
+  return {
+    area: '',
+    theme: '',
+    maxWalkKm: String(BUILDER_LIMITS.maxWalkKm.default),
+    checkpoints: Array.from({ length: BUILDER_LIMITS.checkpoints.min }, blankCheckpoint),
+  };
+}
+
+/**
+ * A builder pre-filled from a draft, for Edit in builder: a pin can't move
+ * once the draft exists, so the organiser starts a new one from this.
+ *
+ * @param {Draft | null | undefined} draft
+ * @returns {Builder}
+ */
+export function builderFromDraft(draft) {
+  const maxWalkKm = draft?.request?.['max-walk-km'];
+  const checkpoints = inRouteOrder(draft).map((checkpoint) => {
+    const location = checkpoint.place?.location;
+    return {
+      ...blankCheckpoint(),
+      ...formFromCheckpoint(checkpoint),
+      proximity: String(checkpoint.proximity ?? BUILDER_LIMITS.proximityDefault),
+      name: textOf(checkpoint.place?.name),
+      location: isLocation(location) ? { lat: location.lat, long: location.long } : null,
+    };
+  });
+  return {
+    area: textOf(draft?.request?.area),
+    theme: textOf(draft?.request?.theme),
+    maxWalkKm: String(typeof maxWalkKm === 'number' ? maxWalkKm : BUILDER_LIMITS.maxWalkKm.default),
+    checkpoints: checkpoints.length > 0 ? checkpoints : newBuilder().checkpoints,
+  };
+}
+
+/**
+ * @param {BuilderCheckpoint[]} list
+ * @returns {BuilderCheckpoint[]} the list with a blank checkpoint at the end; as it was at the most
+ */
+export function addCheckpoint(list) {
+  return list.length >= BUILDER_LIMITS.checkpoints.max ? list : [...list, blankCheckpoint()];
+}
+
+/**
+ * @param {BuilderCheckpoint[]} list
+ * @param {number} index
+ * @returns {BuilderCheckpoint[]} the list without that one; as it was at the fewest
+ */
+export function removeCheckpoint(list, index) {
+  return list.length <= BUILDER_LIMITS.checkpoints.min || !(index in list) ? list : list.filter((_, at) => at !== index);
+}
+
+/**
+ * @param {BuilderCheckpoint[]} list
+ * @param {number} index
+ * @param {-1 | 1} by up or down the route
+ * @returns {BuilderCheckpoint[]} the list with that one moved; as it was at either end
+ */
+export function moveCheckpoint(list, index, by) {
+  const to = index + by;
+  if (!(index in list) || !(to in list)) {
+    return list;
+  }
+  const moved = [...list];
+  [moved[index], moved[to]] = [list[to], list[index]];
+  return moved;
+}
+
+/**
+ * A pin from a tap, a drag or the device's position: its coordinates to
+ * about 10 cm, with the longitude brought back into -180…180 (a map panned
+ * round the world reports it past that).
+ *
+ * @param {number} lat
+ * @param {number} long
+ * @returns {Location | null} null unless it's a place on Earth
+ */
+export function toPin(lat, long) {
+  if (!Number.isFinite(lat) || !Number.isFinite(long) || Math.abs(lat) > 90) {
+    return null;
+  }
+  const wrapped = ((((long + 180) % 360) + 360) % 360) - 180;
+  return { lat: Math.round(lat * 1e6) / 1e6, long: Math.round(wrapped * 1e6) / 1e6 };
+}
+
+/**
+ * The builder checked in the page against the game-server's limits (the
+ * same ones a review edit is held to): what to post, or what's wrong and
+ * under which field. The game-server checks the rest (a clue that names the
+ * place, pins too close together, a loop too long) when it's sent.
+ *
+ * @param {Builder} builder
+ * @returns {{ request: ManualRequest | null, errors: BuilderErrors }} `request` is null when
+ *   `errors` has anything in it
+ */
+export function validateBuilder(builder) {
+  const area = String(builder.area ?? '').trim();
+  const theme = String(builder.theme ?? '').trim();
+  const maxWalkKm = parseNumber(String(builder.maxWalkKm ?? ''));
+  /** @type {BuilderErrors} */
+  const errors = { cards: [] };
+
+  const areaError = textError(area, 'area');
+  if (areaError) {
+    errors.area = areaError;
+  }
+  const themeError = textError(theme, 'theme');
+  if (themeError) {
+    errors.theme = themeError;
+  }
+  const walk = BUILDER_LIMITS.maxWalkKm;
+  if (!Number.isFinite(maxWalkKm) || maxWalkKm < walk.min || maxWalkKm > walk.max) {
+    errors.maxWalkKm = `Choose a walk from ${walk.min} to ${walk.max} km.`;
+  }
+  const count = builder.checkpoints.length;
+  const { min, max } = BUILDER_LIMITS.checkpoints;
+  if (count < min || count > max) {
+    errors.checkpoints = `A hunt has ${min} to ${max} checkpoints.`;
+  }
+
+  /** @type {ManualCheckpointRequest[]} */
+  const checkpoints = [];
+  for (const checkpoint of builder.checkpoints) {
+    /** @type {BuilderCardErrors} */
+    const card = {};
+    const name = String(checkpoint.name ?? '').trim();
+    if (charCount(name) < BUILDER_LIMITS.name.min) {
+      card.name = "Enter the place's name.";
+    } else if (charCount(name) > BUILDER_LIMITS.name.max) {
+      card.name = `Keep the name to ${BUILDER_LIMITS.name.max} characters or fewer.`;
+    }
+    for (const field of /** @type {EditField[]} */ ([...TEXT_FIELDS, 'proximity'])) {
+      const message = fieldError(field, checkpoint[field]);
+      if (message) {
+        card[field] = message;
+      }
+    }
+    if (!isLocation(checkpoint.location)) {
+      card.location = 'Place its pin on the map.';
+    }
+    errors.cards.push(card);
+    if (Object.keys(card).length === 0 && isLocation(checkpoint.location)) {
+      checkpoints.push({
+        name,
+        location: { lat: checkpoint.location.lat, long: checkpoint.location.long },
+        clue: checkpoint.clue.trim(),
+        scene: checkpoint.scene.trim(),
+        pose: checkpoint.pose.trim(),
+        proximity: parseWhole(checkpoint.proximity),
+      });
+    }
+  }
+
+  const valid = !errors.area && !errors.theme && !errors.maxWalkKm && !errors.checkpoints && checkpoints.length === count;
+  return {
+    request: valid ? { area, theme, 'max-walk-km': maxWalkKm, checkpoints } : null,
+    errors,
+  };
+}
+
+/**
+ * The loop through the pins placed so far, in route order, against the longest
+ * walk: "Loop so far: 2.31 km (longest walk 3 km)". The words say when it's
+ * over, so the colour only repeats it.
+ *
+ * @param {Builder} builder
+ * @returns {{ text: string, over: boolean }}
+ */
+export function builderLoopLine(builder) {
+  const pins = builder.checkpoints.map((checkpoint) => checkpoint.location).filter(isLocation);
+  if (pins.length < 2) {
+    return { text: 'Place two pins to see the loop.', over: false };
+  }
+  const metres = loopM(pins);
+  const limitKm = parseNumber(String(builder.maxWalkKm ?? ''));
+  const over = Number.isFinite(limitKm) && metres > limitKm * 1000;
+  const so = pins.length < builder.checkpoints.length ? ' so far' : '';
+  const against = Number.isFinite(limitKm) ? ` (longest walk ${limitKm} km)` : '';
+  return { text: `Loop${so}: ${distanceWords(metres)}${against}${over ? ': too long' : ''}`, over };
+}
+
+/**
+ * What the builder's map draws: a numbered marker for each pin placed (the
+ * number is its card's), the selected one marked, the loop through them
+ * and the view that fits them.
+ *
+ * @param {Builder} builder
+ * @param {number} selected the index of the selected checkpoint
+ * @returns {{
+ *   markers: { index: number, position: number, title: string, className: string, lat: number, long: number }[],
+ *   loop: [number, number][],
+ *   bounds: [[number, number], [number, number]] | null,
+ * }}
+ */
+export function builderMap(builder, selected) {
+  const markers = builder.checkpoints.flatMap((checkpoint, index) => {
+    const { location } = checkpoint;
+    if (!isLocation(location)) {
+      return [];
+    }
+    const isSelected = index === selected;
+    const name = checkpoint.name.trim() || 'Unnamed place';
+    return [
+      {
+        index,
+        position: index + 1,
+        title: `${index + 1}. ${name}${isSelected ? ' (selected)' : ''}`,
+        className: `route-marker route-marker--pending${isSelected ? ' route-marker--selected' : ''}`,
+        lat: location.lat,
+        long: location.long,
+      },
+    ];
+  });
+  return {
+    markers,
+    loop: loopLatLngs(markers),
+    bounds: mapBounds(
+      null,
+      markers.map((marker) => ({ lat: marker.lat, long: marker.long })),
+    ),
+  };
+}
+
+/**
+ * Why the device's position couldn't be had, from a GeolocationPositionError's
+ * code (0 for a browser with no geolocation), and what to do instead.
+ *
+ * @param {number} code
+ * @returns {string}
+ */
+export function locationErrorText(code) {
+  switch (code) {
+    case 0:
+      return "This browser can't share its location. Tap the map instead.";
+    case 1:
+      return "Location access was refused. Allow it for this site in the browser's settings, or tap the map instead.";
+    case 2:
+      return "Your location isn't available right now. Tap the map instead.";
+    case 3:
+      return 'Finding your location took too long. Try again, or tap the map.';
+    default:
+      return "Couldn't get your location. Tap the map instead.";
+  }
+}
+
 // --- errors --------------------------------------------------------------------
 
 /**
@@ -1370,6 +1701,53 @@ export function editError(status, body) {
     };
   }
   return error;
+}
+
+/**
+ * @typedef {DesignerError & {
+ *   lines: string[],
+ *   cards: Record<EditField | 'card', string[]>[],
+ * }} BuilderError
+ */
+
+/**
+ * What a failed post of the builder means: a 422's problems shown on their
+ * checkpoint's card, under the field each is about, and the rest (a loop too
+ * long, pins too close) as lines for the whole hunt.
+ *
+ * @param {number} status 0 for a call that never came back
+ * @param {unknown} body
+ * @param {number} count how many checkpoints were sent
+ * @returns {BuilderError}
+ */
+export function builderError(status, body, count) {
+  const cards = Array.from({ length: count }, () => problemsByField([]));
+  const error = { ...designerError(status, body), lines: [], cards };
+  if (status !== 422) {
+    return error;
+  }
+  const problems = body && typeof body === 'object' && 'problems' in body ? body.problems : undefined;
+  if (!Array.isArray(problems)) {
+    return { ...error, message: "The game-server didn't accept this hunt:", lines: validationLines(body) };
+  }
+  /** @type {unknown[]} */
+  const general = [];
+  /** @type {unknown[][]} */
+  const byCard = cards.map(() => []);
+  for (const problem of problems) {
+    const position = problem && typeof problem === 'object' ? /** @type {Partial<DraftProblem>} */ (problem).position : undefined;
+    if (Number.isInteger(position) && byCard[position - 1]) {
+      byCard[position - 1].push(problem);
+    } else {
+      general.push(problem);
+    }
+  }
+  return {
+    ...error,
+    message: general.length > 0 ? "The game-server didn't accept this hunt:" : "The game-server didn't accept some checkpoints: see the notes on each.",
+    lines: linesOf(general),
+    cards: byCard.map((list) => problemsByField(list)),
+  };
 }
 
 /**
