@@ -1471,6 +1471,14 @@ describe('designer relays', () => {
     'created-at': '2026-10-08T09:00:00Z',
   };
   const list = { drafts: [{ id: DRAFT, status: 'ready', area: 'Chiswick, London', theme: 'The Thames' }] };
+  const manualRequest = {
+    area: 'Chiswick, London',
+    theme: 'Riverside pubs',
+    'max-walk-km': 10,
+    checkpoints: [
+      { name: 'The old boathouse', location: { lat: 51.48, long: -0.25 }, clue: 'Oars rest here.', scene: 'A boathouse.', pose: 'Row', proximity: 30 },
+    ],
+  };
   const edit = { clue: 'Where old lamps once lit the way.', review: 'accepted' };
   const edited = { ...draft.checkpoints[0], clue: edit.clue, review: 'accepted', edited: true };
   const publishRequest = {
@@ -1540,6 +1548,14 @@ describe('designer relays', () => {
       body: undefined,
       success: { status: 200, body: publication },
       send: (app: ReturnType<typeof createApp>) => request(app).get(`/designer/drafts/${DRAFT}/publication`),
+    },
+    {
+      name: 'POST /designer/drafts/manual',
+      method: 'POST',
+      upstreamPath: '/designer/drafts/manual',
+      body: manualRequest,
+      success: { status: 201, body: { ...draft, run: { runner: 'manual' } } },
+      send: (app: ReturnType<typeof createApp>) => request(app).post('/designer/drafts/manual').send(manualRequest),
     },
   ] as const;
 
@@ -1640,6 +1656,47 @@ describe('designer relays', () => {
 
       const [, init] = vi.mocked(fetchMock).mock.calls[0]!;
       expect(JSON.parse(init?.body as string)).toEqual({});
+    });
+  });
+
+  describe('POST /designer/drafts/manual', () => {
+    const send = relays[6].send;
+
+    it.each([
+      [422, { detail: 'draft problems', problems: [{ code: 'names_place', position: 2, message: "Checkpoint 2's clue gives the place away" }] }],
+      [422, { detail: [{ type: 'missing', loc: ['body', 'checkpoints', 0, 'name'], msg: 'Field required' }] }],
+      [401, { detail: 'unauthorised', code: 'unauthorised' }],
+      [403, { detail: 'forbidden', code: 'forbidden' }],
+    ])('passes a %s with its body through unchanged', async (status, body) => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(status, body)));
+
+      const response = await send(createApp(testConfig, { fetch: fetchMock })).set('Authorization', ORGANISER_AUTH);
+
+      expect(response.status).toBe(status);
+      expect(response.body).toEqual(body);
+      expect(response.headers['cache-control']).toBe('no-store');
+    });
+
+    it('sends the request upstream as sent: the game-server alone decides whether it is valid', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(422, { detail: [] })));
+      const odd = { area: 'x', checkpoints: 99, colour: 'red' };
+
+      await request(createApp(testConfig, { fetch: fetchMock }))
+        .post('/designer/drafts/manual')
+        .set('Authorization', ORGANISER_AUTH)
+        .send(odd);
+
+      const [, init] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect(JSON.parse(init?.body as string)).toEqual(odd);
+    });
+
+    it('is not mistaken for a draft id', async () => {
+      const fetchMock: typeof fetch = vi.fn(() => Promise.resolve(jsonResponse(201, draft)));
+
+      await send(createApp(testConfig, { fetch: fetchMock })).set('Authorization', ORGANISER_AUTH);
+
+      const [calledUrl] = vi.mocked(fetchMock).mock.calls[0]!;
+      expect((calledUrl as URL).pathname).toBe('/designer/drafts/manual');
     });
   });
 

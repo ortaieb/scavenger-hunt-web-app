@@ -824,6 +824,13 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Express {
     await relayAuthorised(req, res, '/designer/drafts', { method: 'POST', body: req.body ?? {}, noStore: true });
   });
 
+  // A hunt laid out by hand (see issue #78): the checkpoints' places, clues
+  // and scenes are the hunt's answers, so as above, relayed as sent and kept
+  // out of every cache and log.
+  app.post('/designer/drafts/manual', ...accountAuth, express.json(), async (req: Request, res: ExpressResponse) => {
+    await relayAuthorised(req, res, '/designer/drafts/manual', { method: 'POST', body: req.body ?? {}, noStore: true });
+  });
+
   app.get('/designer/drafts', ...accountAuth, async (req: Request, res: ExpressResponse) => {
     await relayAuthorised(req, res, '/designer/drafts', { noStore: true });
   });
