@@ -41,17 +41,13 @@ function textNode(text) {
 }
 
 /**
- * Makes the map in `container`, which must be on screen.
+ * The Leaflet map and its OpenStreetMap tiles, in `container`.
  *
  * @param {HTMLElement} container
- * @param {{
- *   onSelect: (position: number) => void,
- *   onTiles: (loaded: boolean) => void,
- * }} handlers `onSelect` when a marker is tapped; `onTiles(false)` when a
- *   tile fails, and `onTiles(true)` once a round of tiles loads without one
- * @returns {RouteMap | null} null when Leaflet didn't load
+ * @param {(loaded: boolean) => void} onTiles
+ * @returns {{ L: any, map: any } | null} null when Leaflet didn't load
  */
-export function createRouteMap(container, { onSelect, onTiles }) {
+function createBaseMap(container, onTiles) {
   const L = /** @type {any} */ (window).L;
   if (typeof L?.map !== 'function') {
     return null;
@@ -80,6 +76,26 @@ export function createRouteMap(container, { onSelect, onTiles }) {
     onTiles(false);
   });
   tiles.on('load', () => onTiles(failed === 0));
+  return { L, map };
+}
+
+/**
+ * Makes the map in `container`, which must be on screen.
+ *
+ * @param {HTMLElement} container
+ * @param {{
+ *   onSelect: (position: number) => void,
+ *   onTiles: (loaded: boolean) => void,
+ * }} handlers `onSelect` when a marker is tapped; `onTiles(false)` when a
+ *   tile fails, and `onTiles(true)` once a round of tiles loads without one
+ * @returns {RouteMap | null} null when Leaflet didn't load
+ */
+export function createRouteMap(container, { onSelect, onTiles }) {
+  const base = createBaseMap(container, onTiles);
+  if (!base) {
+    return null;
+  }
+  const { L, map } = base;
 
   const layers = L.layerGroup().addTo(map);
   /** @type {Map<number, any>} */
@@ -147,6 +163,84 @@ export function createRouteMap(container, { onSelect, onTiles }) {
       map.panTo(marker.getLatLng());
       marker.openTooltip();
       return true;
+    },
+  };
+}
+
+/**
+ * @typedef {ReturnType<typeof import('./designer-logic.js').builderMap>} BuilderView
+ * @typedef {{
+ *   draw(view: BuilderView, fit: boolean): void,
+ *   clear(): void,
+ * }} BuilderMap
+ */
+
+/** What the world looks like before there's a pin to fit the view to. */
+const WORLD_VIEW = { center: [20, 0], zoom: 2 };
+
+/**
+ * The hunt builder's map (issue #78) in `container`, which must be on screen:
+ * a numbered, draggable marker for each pin, and the loop through them.
+ * Tapping the map drops a pin (`onPlace`), and dragging a marker moves it
+ * (`onMove`); tapping a marker selects it (`onSelect`). What it draws is
+ * worked out in designer-logic.js (builderMap).
+ *
+ * @param {HTMLElement} container
+ * @param {{
+ *   onPlace: (lat: number, long: number) => void,
+ *   onMove: (index: number, lat: number, long: number) => void,
+ *   onSelect: (index: number) => void,
+ *   onTiles: (loaded: boolean) => void,
+ * }} handlers
+ * @returns {BuilderMap | null} null when Leaflet didn't load
+ */
+export function createBuilderMap(container, { onPlace, onMove, onSelect, onTiles }) {
+  const base = createBaseMap(container, onTiles);
+  if (!base) {
+    return null;
+  }
+  const { L, map } = base;
+  map.setView(WORLD_VIEW.center, WORLD_VIEW.zoom);
+  map.on('click', (/** @type {any} */ event) => onPlace(event.latlng.lat, event.latlng.lng));
+
+  const layers = L.layerGroup().addTo(map);
+
+  return {
+    draw(view, fit) {
+      layers.clearLayers();
+      if (view.loop.length > 0) {
+        L.polyline(view.loop, { className: 'route-loop', color: '#4f46e5', weight: 4, opacity: 0.9, interactive: false }).addTo(
+          layers,
+        );
+      }
+      for (const point of view.markers) {
+        const marker = L.marker([point.lat, point.long], {
+          icon: L.divIcon({
+            className: point.className,
+            html: textNode(String(point.position)),
+            iconSize: [MARKER_SIZE, MARKER_SIZE],
+          }),
+          title: point.title,
+          draggable: true,
+          riseOnHover: true,
+        });
+        marker.bindTooltip(textNode(point.title), { direction: 'top', offset: [0, -MARKER_SIZE / 2] });
+        marker.on('click', () => onSelect(point.index));
+        marker.on('dragend', () => {
+          const { lat, lng } = marker.getLatLng();
+          onMove(point.index, lat, lng);
+        });
+        marker.on('add', () => marker.getElement()?.setAttribute('aria-label', point.title));
+        marker.addTo(layers);
+      }
+      map.invalidateSize();
+      if (fit && view.bounds) {
+        map.fitBounds(view.bounds, { padding: [24, 24], maxZoom: FIT_MAX_ZOOM });
+      }
+    },
+
+    clear() {
+      layers.clearLayers();
     },
   };
 }

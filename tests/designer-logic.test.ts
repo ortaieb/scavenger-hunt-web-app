@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   acceptedLoopM,
+  addCheckpoint,
+  blankCheckpoint,
+  BUILDER_LIMITS,
+  builderError,
+  builderFromDraft,
+  builderLoopLine,
+  builderMap,
+  BY_HAND_WORDS,
   areaBox,
   changedFields,
   charCount,
@@ -20,16 +28,20 @@ import {
   formFromCheckpoint,
   formFromRequest,
   isDraftId,
+  isManual,
   isRunning,
   kindWords,
   LIMITS,
   localToIso,
   loopLatLngs,
+  locationErrorText,
   loopM,
   mapBounds,
   MARKER_STYLES,
   markerStyle,
   MIN_ACCEPTED,
+  moveCheckpoint,
+  newBuilder,
   newestFirst,
   osmUrl,
   problemField,
@@ -42,6 +54,7 @@ import {
   publishError,
   publishReadiness,
   readDraftId,
+  removeCheckpoint,
   requestLine,
   REVIEW_WORDS,
   reviewCards,
@@ -54,6 +67,8 @@ import {
   statusLabel,
   STEP_LABELS,
   stepLabel,
+  toPin,
+  validateBuilder,
   validateDesign,
   validateEdit,
   validatePublish,
@@ -298,6 +313,7 @@ describe('the drafts list', () => {
       theme: 'The Thames',
       when: whenWords('2026-10-08T09:00:00Z'),
       cost: '$0.42',
+      byHand: false,
     });
     expect(line.when).toMatch(/\d/);
   });
@@ -1251,5 +1267,417 @@ describe('designerError', () => {
     for (const status of [0, 400, 401, 403, 404, 409, 422, 500, 502, 503, 504]) {
       expect(designerError(status, { detail: key, error: key, code: key }).message).not.toContain(key);
     }
+  });
+});
+
+describe('a hunt placed by hand', () => {
+  const manual = {
+    ...ready,
+    run: { runner: 'manual', model: null, turns: 0, 'cost-usd': 0, 'duration-ms': null, error: null },
+    checkpoints: [1, 2, 3].map((position) => ({
+      ...checkpoint(position, `Pin ${position}`),
+      place: { osm: `manual/${position}`, name: `Pin ${position}`, kind: 'manual', location: { lat: 51.48 + position / 1000, long: -0.25 } },
+      rationale: '',
+    })),
+  };
+
+  it('is told apart by its runner', () => {
+    expect(isManual(manual)).toBe(true);
+    expect(isManual(ready)).toBe(false);
+    expect(isManual(null)).toBe(false);
+  });
+
+  it('says it was placed by hand in place of the run, and not what it cost', () => {
+    expect(runLine(manual)).toBe(BY_HAND_WORDS);
+    expect(BY_HAND_WORDS).toBe('Placed by hand');
+    expect(runLine({ ...manual, run: { ...manual.run, 'cost-usd': 0.42 } })).toBe('Placed by hand');
+  });
+
+  it('says so in the drafts list, from the list own runner field, with no cost', () => {
+    const item = { id: DRAFT, status: 'ready', area: 'A', theme: 'T', 'created-at': '2026-10-08T09:00:00Z', 'cost-usd': 0, runner: 'manual' };
+
+    expect(draftListLine(item)).toMatchObject({ byHand: true, cost: '' });
+    expect(draftListLine({ ...item, runner: 'agent', 'cost-usd': 0.42 })).toMatchObject({ byHand: false, cost: '$0.42' });
+    expect(draftListLine({ ...item, runner: undefined })).toMatchObject({ byHand: false });
+  });
+
+  it('has cards with no rationale, no OpenStreetMap link and no kind', () => {
+    for (const card of reviewCards(manual)) {
+      expect(card).toMatchObject({ rationale: '', osmUrl: null, kind: '' });
+    }
+    expect(reviewCards(manual).map((card) => card.name)).toEqual(['Pin 1', 'Pin 2', 'Pin 3']);
+  });
+});
+
+describe('the hunt builder', () => {
+  const pinned = (name: string, lat: number, long: number): ReturnType<typeof blankCheckpoint> => ({
+    ...blankCheckpoint(),
+    name,
+    clue: `Clue for ${name}`,
+    scene: `Scene for ${name}`,
+    pose: `Pose for ${name}`,
+    location: { lat, long },
+  });
+  /** A builder that's ready to send: three pins about 560 m apart. */
+  const complete = () => ({
+    area: ' Chiswick, London ',
+    theme: 'Riverside pubs',
+    maxWalkKm: '10',
+    checkpoints: [pinned(' The boathouse ', 51.48, -0.25), pinned('The bridge', 51.485, -0.25), pinned('The pier', 51.485, -0.243)],
+  });
+
+  describe('a new builder', () => {
+    it('starts with the fewest checkpoints, the longest walk and a 30 m radius', () => {
+      const builder = newBuilder();
+
+      expect(builder).toMatchObject({ area: '', theme: '', maxWalkKm: '10' });
+      expect(builder.checkpoints).toHaveLength(3);
+      expect(builder.checkpoints[0]).toEqual({ name: '', clue: '', scene: '', pose: '', proximity: '30', location: null });
+    });
+
+    it('gives every checkpoint of its own, not one shared object', () => {
+      const [first, second] = newBuilder().checkpoints;
+
+      expect(first).not.toBe(second);
+    });
+  });
+
+  describe('adding, removing and moving checkpoints', () => {
+    const list = ['a', 'b', 'c'].map((name) => ({ ...blankCheckpoint(), name }));
+    const names = (checkpoints: { name: string }[]) => checkpoints.map((checkpoint) => checkpoint.name);
+
+    it('adds a blank one at the end, up to 8', () => {
+      const added = addCheckpoint(list);
+
+      expect(added).toHaveLength(4);
+      expect(added[3]).toEqual(blankCheckpoint());
+      expect(names(list)).toEqual(['a', 'b', 'c']);
+      const full = Array.from({ length: BUILDER_LIMITS.checkpoints.max }, blankCheckpoint);
+      expect(addCheckpoint(full)).toBe(full);
+    });
+
+    it('removes one, down to 3', () => {
+      const four = [...list, { ...blankCheckpoint(), name: 'd' }];
+
+      expect(names(removeCheckpoint(four, 1))).toEqual(['a', 'c', 'd']);
+      expect(removeCheckpoint(list, 1)).toBe(list);
+      expect(removeCheckpoint(four, 9)).toBe(four);
+      expect(removeCheckpoint(four, -1)).toBe(four);
+    });
+
+    it('moves one up or down the route, and leaves it at either end', () => {
+      expect(names(moveCheckpoint(list, 1, -1))).toEqual(['b', 'a', 'c']);
+      expect(names(moveCheckpoint(list, 1, 1))).toEqual(['a', 'c', 'b']);
+      expect(moveCheckpoint(list, 0, -1)).toBe(list);
+      expect(moveCheckpoint(list, 2, 1)).toBe(list);
+      expect(names(list)).toEqual(['a', 'b', 'c']);
+    });
+  });
+
+  describe('a pin', () => {
+    it('is rounded to about 10 cm', () => {
+      expect(toPin(51.4800004999, -0.2500004999)).toEqual({ lat: 51.48, long: -0.25 });
+      expect(toPin(51.12345678, -0.98765432)).toEqual({ lat: 51.123457, long: -0.987654 });
+    });
+
+    it.each([
+      [190, -170],
+      [-190, 170],
+      [540, -180],
+      [-181, 179],
+    ])('brings a longitude of %s back to %s, as a map panned round the world reports it', (long, expected) => {
+      expect(toPin(10, long)?.long).toBe(expected);
+    });
+
+    it.each([
+      [Number.NaN, 0],
+      [0, Number.NaN],
+      [91, 0],
+      [-90.5, 0],
+      [Number.POSITIVE_INFINITY, 0],
+    ])('is not a place on Earth: %s, %s', (lat, long) => {
+      expect(toPin(lat, long)).toBeNull();
+    });
+  });
+
+  describe('validateBuilder', () => {
+    it("builds the request: trimmed, in route order, the radius as a number and the walk's own key", () => {
+      const { request: built, errors } = validateBuilder(complete());
+
+      expect(errors.cards.every((card) => Object.keys(card).length === 0)).toBe(true);
+      expect(built).toEqual({
+        area: 'Chiswick, London',
+        theme: 'Riverside pubs',
+        'max-walk-km': 10,
+        checkpoints: [
+          { name: 'The boathouse', location: { lat: 51.48, long: -0.25 }, clue: 'Clue for  The boathouse', scene: 'Scene for  The boathouse', pose: 'Pose for  The boathouse', proximity: 30 },
+          { name: 'The bridge', location: { lat: 51.485, long: -0.25 }, clue: 'Clue for The bridge', scene: 'Scene for The bridge', pose: 'Pose for The bridge', proximity: 30 },
+          { name: 'The pier', location: { lat: 51.485, long: -0.243 }, clue: 'Clue for The pier', scene: 'Scene for The pier', pose: 'Pose for The pier', proximity: 30 },
+        ],
+      });
+    });
+
+    it('holds area and theme to the same limits as a designed hunt', () => {
+      const { request: built, errors } = validateBuilder({ ...complete(), area: 'ab', theme: 'x'.repeat(201) });
+
+      expect(built).toBeNull();
+      expect(errors.area).toBe('Enter the area: at least 3 characters.');
+      expect(errors.theme).toBe('Keep the theme to 200 characters or fewer.');
+    });
+
+    it.each(['0.4', '10.5', '', 'abc', '-1'])('refuses a longest walk of %j', (maxWalkKm) => {
+      const { request: built, errors } = validateBuilder({ ...complete(), maxWalkKm });
+
+      expect(built).toBeNull();
+      expect(errors.maxWalkKm).toBe('Choose a walk from 0.5 to 10 km.');
+    });
+
+    it.each(['0.5', '3', '10'])('accepts a longest walk of %s', (maxWalkKm) => {
+      expect(validateBuilder({ ...complete(), maxWalkKm }).request).not.toBeNull();
+    });
+
+    it.each([2, 9])('refuses %s checkpoints', (count) => {
+      const base = complete().checkpoints;
+      const checkpoints = Array.from({ length: count }, (_, index) => base[index % 3]!);
+
+      const { request: built, errors } = validateBuilder({ ...complete(), checkpoints });
+
+      expect(built).toBeNull();
+      expect(errors.checkpoints).toBe('A hunt has 3 to 8 checkpoints.');
+    });
+
+    it("holds each checkpoint's text and radius to the review limits, each error under its own field", () => {
+      const builder = complete();
+      builder.checkpoints[0] = {
+        ...builder.checkpoints[0]!,
+        name: ' ',
+        clue: 'x'.repeat(CHECKPOINT_LIMITS.clue.max + 1),
+        scene: '   ',
+        pose: '',
+        proximity: '19',
+        location: null,
+      };
+      builder.checkpoints[1] = { ...builder.checkpoints[1]!, name: 'n'.repeat(101), proximity: '100.5' };
+
+      const { request: built, errors } = validateBuilder(builder);
+
+      expect(built).toBeNull();
+      expect(errors.cards[0]).toEqual({
+        name: "Enter the place's name.",
+        clue: 'Keep the clue to 300 characters or fewer.',
+        scene: "The scene can't be empty.",
+        pose: "The pose can't be empty.",
+        proximity: 'Choose a whole number of metres from 20 to 100.',
+        location: 'Place its pin on the map.',
+      });
+      expect(errors.cards[1]).toEqual({
+        name: 'Keep the name to 100 characters or fewer.',
+        proximity: 'Choose a whole number of metres from 20 to 100.',
+      });
+      expect(errors.cards[2]).toEqual({});
+    });
+
+    it.each([
+      ['20', true],
+      ['100', true],
+      ['19', false],
+      ['101', false],
+    ])('takes a radius of %s: %s', (proximity, ok) => {
+      const builder = complete();
+      builder.checkpoints[2] = { ...builder.checkpoints[2]!, proximity };
+
+      expect(validateBuilder(builder).request !== null).toBe(ok);
+    });
+
+    it('counts an emoji once, as the game-server does', () => {
+      const builder = complete();
+      builder.checkpoints[0] = { ...builder.checkpoints[0]!, pose: '🧭'.repeat(CHECKPOINT_LIMITS.pose.max) };
+
+      expect(validateBuilder(builder).request).not.toBeNull();
+    });
+
+    it('does not send a pin the page made up: the pin must be a real position', () => {
+      const builder = complete();
+      builder.checkpoints[0] = { ...builder.checkpoints[0]!, location: { lat: Number.NaN, long: 0 } };
+
+      expect(validateBuilder(builder).errors.cards[0]).toEqual({ location: 'Place its pin on the map.' });
+    });
+  });
+
+  describe('the loop, live', () => {
+    it('waits for two pins', () => {
+      const builder = newBuilder();
+      expect(builderLoopLine(builder)).toEqual({ text: 'Place two pins to see the loop.', over: false });
+      builder.checkpoints[0] = pinned('a', 51.48, -0.25);
+      expect(builderLoopLine(builder).over).toBe(false);
+      expect(builderLoopLine(builder).text).toBe('Place two pins to see the loop.');
+    });
+
+    it('is the closed loop through the pins placed so far, against the longest walk', () => {
+      const builder = complete();
+      const metres = loopM(builder.checkpoints.map((checkpoint) => checkpoint.location!));
+
+      expect(builderLoopLine(builder)).toEqual({ text: `Loop: ${distanceWords(metres)} (longest walk 10 km)`, over: false });
+      builder.checkpoints[2] = { ...builder.checkpoints[2]!, location: null };
+      const partial = loopM([builder.checkpoints[0]!.location!, builder.checkpoints[1]!.location!]);
+      expect(builderLoopLine(builder).text).toBe(`Loop so far: ${distanceWords(partial)} (longest walk 10 km)`);
+    });
+
+    it('says in words when it is over the longest walk', () => {
+      const line = builderLoopLine({ ...complete(), maxWalkKm: '1' });
+
+      expect(line.over).toBe(true);
+      expect(line.text).toMatch(/\(longest walk 1 km\): too long$/);
+    });
+
+    it('does not guess a limit from a walk that is not a number', () => {
+      const line = builderLoopLine({ ...complete(), maxWalkKm: '' });
+
+      expect(line.over).toBe(false);
+      expect(line.text).not.toContain('longest walk');
+    });
+  });
+
+  describe('what the map draws', () => {
+    it('is a numbered marker for each pin placed, with the number of its card, and the loop through them', () => {
+      const builder = complete();
+      builder.checkpoints[1] = { ...builder.checkpoints[1]!, location: null };
+
+      const view = builderMap(builder, 2);
+
+      expect(view.markers.map((marker) => [marker.index, marker.position, marker.title])).toEqual([
+        [0, 1, '1. The boathouse'],
+        [2, 3, '3. The pier (selected)'],
+      ]);
+      expect(view.loop).toEqual([
+        [51.48, -0.25],
+        [51.485, -0.243],
+        [51.48, -0.25],
+      ]);
+      expect(view.bounds).toEqual([
+        [51.48, -0.25],
+        [51.485, -0.243],
+      ]);
+    });
+
+    it('marks the selected pin, and names one with no name yet', () => {
+      const builder = complete();
+      builder.checkpoints[0] = { ...builder.checkpoints[0]!, name: '' };
+
+      const [first, second] = builderMap(builder, 0).markers;
+
+      expect(first).toMatchObject({ title: '1. Unnamed place (selected)', className: 'route-marker route-marker--pending route-marker--selected' });
+      expect(second!.className).toBe('route-marker route-marker--pending');
+    });
+
+    it('has nothing to fit with no pins', () => {
+      expect(builderMap(newBuilder(), 0)).toEqual({ markers: [], loop: [], bounds: null });
+    });
+  });
+
+  describe('Edit in builder', () => {
+    const manual = {
+      ...ready,
+      request: { area: 'Chiswick, London', theme: 'Riverside pubs', checkpoints: 3, 'max-walk-km': 4 },
+      run: { runner: 'manual' },
+      checkpoints: [
+        { ...checkpoint(2, 'The bridge'), proximity: 55, place: { ...checkpoint(2, '').place, name: 'The bridge', location: { lat: 51.485, long: -0.25 } } },
+        { ...checkpoint(1, 'The boathouse'), place: { ...checkpoint(1, '').place, name: 'The boathouse', location: { lat: 51.48, long: -0.25 } } },
+        checkpoint(3, 'The pier'),
+      ],
+    };
+
+    it('fills a builder from the draft, in route order, with its pins and the radius it has', () => {
+      const builder = builderFromDraft(manual);
+
+      expect(builder).toMatchObject({ area: 'Chiswick, London', theme: 'Riverside pubs', maxWalkKm: '4' });
+      expect(builder.checkpoints.map((c) => c.name)).toEqual(['The boathouse', 'The bridge', 'The pier']);
+      expect(builder.checkpoints[0]).toEqual({
+        name: 'The boathouse',
+        clue: 'Clue 1',
+        scene: 'Scene 1',
+        pose: 'Pose 1',
+        proximity: '40',
+        location: { lat: 51.48, long: -0.25 },
+      });
+      expect(builder.checkpoints[1]!.proximity).toBe('55');
+    });
+
+    it('passes validation as it stands, so it can be sent as a new draft', () => {
+      expect(validateBuilder(builderFromDraft(manual)).request).not.toBeNull();
+    });
+
+    it('falls back to a blank builder for anything missing', () => {
+      expect(builderFromDraft(null)).toEqual(newBuilder());
+      expect(builderFromDraft({ ...manual, request: undefined as never, checkpoints: [] }).maxWalkKm).toBe('10');
+    });
+  });
+
+  describe('why the position could not be had', () => {
+    it.each([
+      [0, /can't share its location/],
+      [1, /refused/],
+      [2, /isn't available/],
+      [3, /too long/],
+      [99, /Couldn't get your location/],
+    ])('says what to do for code %s', (code, words) => {
+      expect(locationErrorText(code)).toMatch(words);
+      expect(locationErrorText(code)).toMatch(/map/);
+    });
+  });
+
+  describe('builderError', () => {
+    it('puts a 422\'s problems on their checkpoint, under the field each is about, and the rest on the hunt', () => {
+      const error = builderError(
+        422,
+        {
+          detail: 'draft problems',
+          problems: [
+            { code: 'names_place', position: 2, message: 'Checkpoint 2\'s clue gives the place away ("bridge"); describe it without its name' },
+            { code: 'too_close', position: 3, message: 'Checkpoints 2 and 3 are 90 m apart; keep them at least 150 m apart' },
+            { code: 'route_too_long', position: null, message: 'The loop is 12 km; keep it to 10 km' },
+            { code: 'bad_proximity', position: 9, message: 'Checkpoint 9 is not one of yours' },
+          ],
+        },
+        3,
+      );
+
+      expect(error.lines).toEqual(['The loop is 12 km; keep it to 10 km', 'Checkpoint 9: Checkpoint 9 is not one of yours']);
+      expect(error.message).toBe("The game-server didn't accept this hunt:");
+      expect(error.cards[0]).toEqual({ clue: [], pose: [], scene: [], proximity: [], card: [] });
+      expect(error.cards[1]!.clue).toEqual(['Checkpoint 2\'s clue gives the place away ("bridge"); describe it without its name']);
+      expect(error.cards[2]!.card).toEqual(['Checkpoints 2 and 3 are 90 m apart; keep them at least 150 m apart']);
+    });
+
+    it('points at the cards when every problem is on one', () => {
+      const error = builderError(422, { detail: 'draft problems', problems: [{ code: 'bad_proximity', position: 1, message: 'x' }] }, 3);
+
+      expect(error.lines).toEqual([]);
+      expect(error.message).toMatch(/see the notes on each/);
+      expect(error.cards[0]!.proximity).toEqual(['x']);
+    });
+
+    it("lists a validation error's place and message, when the body has no problems", () => {
+      const error = builderError(
+        422,
+        { detail: [{ type: 'missing', loc: ['body', 'checkpoints', 0, 'name'], msg: 'Field required' }] },
+        3,
+      );
+
+      expect(error.lines).toEqual(['checkpoints 1 name: Field required']);
+    });
+
+    it.each([
+      [401, { signInAgain: true }],
+      [403, { forbidden: true }],
+      [0, { offline: true }],
+      [502, { offline: true }],
+    ])('is a %s: the same answer as everywhere else on the page', (status, flags) => {
+      expect(builderError(status, null, 3)).toMatchObject({ ...flags, lines: [] });
+    });
+
+    it('says what went wrong for an error it does not know', () => {
+      expect(builderError(500, null, 3).message).toBe('Something went wrong (error 500).');
+    });
   });
 });

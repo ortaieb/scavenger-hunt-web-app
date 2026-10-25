@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 //
-// The hunt designer page (issues #59, #60 and #61), run in a DOM against a
+// The hunt designer page (issues #59, #60, #61 and #78), run in a DOM against a
 // stub of the game-server's designer API behind this app's relays: the
 // page's own designer.js, with fetch answered in memory, and its map drawn by
 // the same Leaflet build /vendor/leaflet/ serves. The relays themselves are
@@ -15,12 +15,13 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 
 const TOKEN = 'clerk-session-token';
 const DRAFT = '5b0c7a1e-1111-4111-8111-111111111111';
 const FAILED = '5b0c7a1e-2222-4222-8222-222222222222';
 const RUNNING = '5b0c7a1e-3333-4333-8333-333333333333';
+const SECOND = '5b0c7a1e-4444-4444-8444-444444444444';
 const SESSION = '33333333-3333-4333-8333-333333333333';
 const MODERATOR_CODE = 'MOD-7Q2KX9P4H3MN';
 
@@ -43,6 +44,9 @@ vi.mock('../src/public/authorised-fetch.js', () => ({
 interface Leaflet {
   rectangle: (...args: unknown[]) => unknown;
   polyline: (...args: unknown[]) => unknown;
+  map: (...args: unknown[]) => unknown;
+  marker: (...args: unknown[]) => unknown;
+  latLng: (lat: number, lng: number) => unknown;
   Map: { prototype: { fitBounds: (...args: unknown[]) => unknown; panTo: (...args: unknown[]) => unknown } };
 }
 
@@ -120,6 +124,7 @@ function stubGameServer() {
     disabled: false,
     offline: false,
     nextId: DRAFT,
+    manualAnswer: null as { status: number; body: unknown } | null,
     publishAnswer: null as { status: number; body: unknown } | null,
     publicationOffline: false,
   };
@@ -170,9 +175,13 @@ function stubGameServer() {
       });
       return Promise.resolve(json(202, { id, status: 'running' }));
     }
+    if (call.method === 'POST' && url === '/designer/drafts/manual') {
+      return Promise.resolve(createManualDraft(call.body as Json));
+    }
     if (call.method === 'GET' && url === '/designer/drafts') {
       const list = [...drafts.values()].reverse().map((draft) => ({
         id: draft.id,
+        runner: (draft.run as Json).runner,
         status: draft.status,
         area: (draft.request as Json).area,
         theme: (draft.request as Json).theme,
@@ -227,6 +236,51 @@ function stubGameServer() {
     }
     return Promise.resolve(json(404, { detail: 'Not Found' }));
   });
+
+  /**
+   * POST …/manual: a hunt laid out by hand is stored at once as a ready
+   * draft, each checkpoint pending, with no rationale and no run.
+   */
+  function createManualDraft(body: Json) {
+    if (state.manualAnswer) {
+      return json(state.manualAnswer.status, state.manualAnswer.body);
+    }
+    const id = state.nextId;
+    const sent = body.checkpoints as Json[];
+    const lats = sent.map((checkpoint) => (checkpoint.location as Json).lat as number);
+    const longs = sent.map((checkpoint) => (checkpoint.location as Json).long as number);
+    const draft = {
+      id,
+      status: 'ready',
+      request: { area: body.area, theme: body.theme, checkpoints: sent.length, 'max-walk-km': body['max-walk-km'] },
+      area: {
+        name: body.area,
+        bbox: { south: Math.min(...lats), west: Math.min(...longs), north: Math.max(...lats), east: Math.max(...longs) },
+        clipped: false,
+      },
+      progress: [],
+      checkpoints: sent.map((checkpoint, index) => ({
+        position: index + 1,
+        place: { osm: `manual/${index + 1}`, name: checkpoint.name, kind: 'manual', location: checkpoint.location },
+        clue: checkpoint.clue,
+        challenge: { scene: checkpoint.scene, pose: checkpoint.pose },
+        proximity: checkpoint.proximity,
+        rationale: '',
+        review: 'pending',
+        edited: false,
+        original: null,
+      })),
+      route: { 'legs-m': [], 'loop-m': 1000 },
+      problems: [],
+      run: { runner: 'manual', model: null, turns: 0, 'cost-usd': 0, 'duration-ms': null, error: null },
+      attribution: '',
+      published: null,
+      'created-at': new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+      'finished-at': new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+    };
+    drafts.set(id, draft);
+    return json(201, draft);
+  }
 
   /**
    * PATCH a checkpoint: text edits are held to the naming rule (a word of 5
@@ -1663,6 +1717,697 @@ describe('the route map', () => {
     await settle();
     expect(mapMarkers()).toHaveLength(0);
     expect(document.querySelector('#route-map .leaflet-tooltip')).toBeNull();
+  });
+});
+
+describe('the hunt builder', () => {
+  type Marker = { _map: unknown; options: { title: string }; setLatLng: (latLng: number[]) => unknown; fire: (type: string) => unknown };
+  type LeafletMap = { fire: (type: string, event: unknown) => unknown; getContainer: () => HTMLElement };
+  let mapSpy: MockInstance<(...args: unknown[]) => unknown>;
+  let markerSpy: MockInstance<(...args: unknown[]) => unknown>;
+  let fitBounds: MockInstance<(...args: unknown[]) => unknown>;
+  let geolocation: { getCurrentPosition: ReturnType<typeof vi.fn> };
+
+  const PINS = [
+    [51.48, -0.25],
+    [51.485, -0.25],
+    [51.485, -0.243],
+  ] as const;
+  const NAMES = ['The boathouse', 'The bridge', 'The pier'];
+
+  beforeEach(() => {
+    mapSpy = vi.spyOn(leaflet, 'map');
+    markerSpy = vi.spyOn(leaflet, 'marker');
+    fitBounds = vi.spyOn(leaflet.Map.prototype, 'fitBounds');
+    geolocation = { getCurrentPosition: vi.fn() };
+    Object.defineProperty(navigator, 'geolocation', { value: geolocation, configurable: true });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(navigator, 'geolocation', { value: undefined, configurable: true });
+  });
+
+  const builderMapOf = () =>
+    mapSpy.mock.results.map((result) => result.value as LeafletMap).reverse().find((map) => map.getContainer().id === 'builder-map')!;
+  /** The marker on the builder's map with this number. */
+  const markerOf = (position: number) =>
+    markerSpy.mock.results
+      .map((result) => result.value as Marker)
+      .reverse()
+      .find((marker) => marker._map && marker.options.title.startsWith(`${position}.`))!;
+  const builderMarkers = () => [...document.querySelectorAll<HTMLElement>('#builder-map .route-marker')];
+  const tap = (lat: number, long: number) => builderMapOf().fire('click', { latlng: leaflet.latLng(lat, long) });
+  const bCard = (index: number) => $('builder-cards').children[index] as HTMLElement;
+  const bField = (index: number, field: string) => input(`builder-${index}-${field}`);
+  const bText = (index: number, selector: string) => bCard(index).querySelector(selector)?.textContent?.trim() ?? '';
+  const bButton = (index: number, action: string) => bCard(index).querySelector(`button[data-action="${action}"]`) as HTMLButtonElement;
+  const names = () => [...$('builder-cards').children].map((_, index) => bField(index, 'name').value);
+  const selectedCards = () => [...$('builder-cards').children].flatMap((li, index) => (li.classList.contains('builder-card--selected') ? [index] : []));
+  /** Focusing a card is how it's selected. */
+  const select = (index: number) => bField(index, 'name').dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+  const chooseMode = async (mode: 'agent' | 'manual') => {
+    const radio = document.querySelector<HTMLInputElement>(`input[name="design-mode"][value="${mode}"]`)!;
+    radio.checked = true;
+    radio.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+  };
+  const click = async (element: HTMLElement) => {
+    element.click();
+    await settle();
+  };
+
+  async function openBuilder(url = '/designer') {
+    await loadPage(url);
+    await chooseMode('manual');
+  }
+
+  /** Types in a checkpoint's fields and pins it. */
+  function placeCheckpoint(index: number, name: string, pin: readonly [number, number]) {
+    select(index);
+    type(`builder-${index}-name`, name);
+    type(`builder-${index}-clue`, `Clue for ${name}`);
+    type(`builder-${index}-scene`, `Scene for ${name}`);
+    type(`builder-${index}-pose`, `Pose for ${name}`);
+    tap(...pin);
+  }
+
+  /** A whole hunt, ready to send. */
+  async function fillHunt() {
+    await openBuilder();
+    type('builder-area', '  Chiswick, London ');
+    type('builder-theme', 'Riverside pubs');
+    NAMES.forEach((name, index) => placeCheckpoint(index, name, PINS[index]!));
+    await settle();
+  }
+
+  const huntRequest = {
+    area: 'Chiswick, London',
+    theme: 'Riverside pubs',
+    'max-walk-km': 10,
+    checkpoints: NAMES.map((name, index) => ({
+      name,
+      location: { lat: PINS[index]![0], long: PINS[index]![1] },
+      clue: `Clue for ${name}`,
+      scene: `Scene for ${name}`,
+      pose: `Pose for ${name}`,
+      proximity: 30,
+    })),
+  };
+
+  describe('choosing how to design', () => {
+    it('offers the designer first, and swaps the form for the builder when the organiser places them', async () => {
+      await loadPage();
+
+      expect(visible('design-form')).toBe(true);
+      expect(visible('builder-form')).toBe(false);
+      expect(document.querySelector<HTMLInputElement>('input[name="design-mode"]:checked')!.value).toBe('agent');
+      expect([...document.querySelectorAll('.mode-option')].map((label) => label.textContent?.trim())).toEqual([
+        'Let the designer choose',
+        'Place them myself',
+      ]);
+
+      fillDesign({ area: 'Chiswick, London' });
+      await chooseMode('manual');
+      expect(visible('design-form')).toBe(false);
+      expect(visible('builder-form')).toBe(true);
+
+      // Nothing typed in either is lost by swapping.
+      await chooseMode('agent');
+      expect(visible('builder-form')).toBe(false);
+      expect(input('area').value).toBe('Chiswick, London');
+    });
+
+    it('starts the builder with 3 checkpoints, a walk of 10 km and a 30 m radius, with no map pin yet', async () => {
+      await openBuilder();
+
+      expect($('builder-cards').children).toHaveLength(3);
+      expect(input('builder-max-walk-km').value).toBe('10');
+      expect(bField(0, 'proximity').value).toBe('30');
+      expect(bText(0, '.builder-pin-status')).toBe('No pin yet');
+      expect(text('builder-loop')).toBe('Place two pins to see the loop.');
+      expect(builderMarkers()).toHaveLength(0);
+      expect(visible('builder-map')).toBe(true);
+    });
+
+    it('goes back to the designer form for Try again on a failed draft', async () => {
+      server.drafts.set(FAILED, {
+        id: FAILED,
+        status: 'failed',
+        request: { area: 'Chiswick, London', theme: 'The Thames', checkpoints: 3, 'max-walk-km': 3 },
+        area: null,
+        progress: [],
+        checkpoints: [],
+        route: null,
+        problems: [],
+        run: { runner: 'agent', model: null, turns: 0, 'cost-usd': 0, 'duration-ms': 1000, error: { code: 'max_turns' } },
+        published: null,
+        'created-at': '2026-10-08T08:00:00Z',
+        'finished-at': '2026-10-08T08:01:00Z',
+      });
+      await loadPage(`/designer?draft=${FAILED}`);
+      await chooseMode('manual');
+
+      await click($('try-again'));
+
+      expect(visible('design-form')).toBe(true);
+      expect(visible('builder-form')).toBe(false);
+      expect(input('area').value).toBe('Chiswick, London');
+    });
+  });
+
+  describe('placing the pins', () => {
+    it("drops the selected checkpoint's pin where the map is tapped, numbered as its card", async () => {
+      await openBuilder();
+      expect(selectedCards()).toEqual([0]);
+
+      tap(...PINS[0]);
+      select(2);
+      tap(...PINS[2]);
+
+      expect(builderMarkers().map((marker) => marker.getAttribute('aria-label'))).toEqual(['1. Unnamed place', '3. Unnamed place (selected)']);
+      expect(bText(0, '.builder-pin-status')).toBe('Pin placed at 51.48000, -0.25000');
+      expect(bText(1, '.builder-pin-status')).toBe('No pin yet');
+      expect(bText(2, '.builder-pin-hint')).toBe('Tap the map to move this pin, or drag it.');
+      expect(bText(1, '.builder-pin-hint')).toBe('Select this checkpoint to place its pin.');
+      expect(document.querySelector('#builder-map path.route-loop')).not.toBeNull();
+    });
+
+    it("rounds a pin to about 10 cm and wraps a longitude from a map panned round the world", async () => {
+      await openBuilder();
+
+      tap(51.48000049, -0.25000049 + 360);
+
+      expect(bText(0, '.builder-pin-status')).toBe('Pin placed at 51.48000, -0.25000');
+    });
+
+    it("selects the checkpoint whose card is touched, or whose marker is tapped, and scrolls to the card", async () => {
+      await openBuilder();
+      placeCheckpoint(0, 'a place', PINS[0]);
+      placeCheckpoint(1, 'b place', PINS[1]);
+      expect(selectedCards()).toEqual([1]);
+
+      markerOf(1).fire('click');
+      await settle();
+
+      expect(selectedCards()).toEqual([0]);
+      expect(document.activeElement).toBe(bCard(0));
+      expect(builderMarkers().map((marker) => marker.classList.contains('route-marker--selected'))).toEqual([true, false]);
+    });
+
+    it('moves a pin that is dragged, and the loop with it', async () => {
+      await fillHunt();
+      const loopBefore = text('builder-loop');
+
+      markerOf(2).setLatLng([51.49, -0.25]);
+      markerOf(2).fire('dragend');
+      await settle();
+
+      expect(bText(1, '.builder-pin-status')).toBe('Pin placed at 51.49000, -0.25000');
+      expect(text('builder-loop')).not.toBe(loopBefore);
+    });
+
+    it('shows the loop live against the longest walk, and says in words when it is too long', async () => {
+      await fillHunt();
+      expect(text('builder-loop')).toMatch(/^Loop: 1\.\d\d km \(longest walk 10 km\)$/);
+      expect($('builder-loop').classList.contains('builder-loop--over')).toBe(false);
+
+      type('builder-max-walk-km', '1');
+
+      expect(text('builder-loop')).toMatch(/\(longest walk 1 km\): too long$/);
+      expect($('builder-loop').classList.contains('builder-loop--over')).toBe(true);
+    });
+
+    it('says it is a loop so far while a pin is missing', async () => {
+      await openBuilder();
+      tap(...PINS[0]);
+      select(1);
+      tap(...PINS[1]);
+
+      expect(text('builder-loop')).toMatch(/^Loop so far: /);
+    });
+
+    it('does not refit the map to a pin that is tapped: that would undo the organiser\'s pan and zoom', async () => {
+      await openBuilder();
+      tap(...PINS[0]);
+      select(1);
+      tap(...PINS[1]);
+
+      expect(fitBounds).not.toHaveBeenCalled();
+    });
+
+    it("says when the map couldn't load, and the builder still works", async () => {
+      setLeaflet(undefined);
+      await openBuilder();
+
+      expect(visible('builder-map')).toBe(false);
+      expect(text('builder-map-note')).toMatch(/^The map couldn't load/);
+      type('builder-0-name', 'The boathouse');
+      expect(bField(0, 'name').value).toBe('The boathouse');
+    });
+  });
+
+  describe('Use my location', () => {
+    it('pins the checkpoint where the organiser stands, and brings the map there', async () => {
+      geolocation.getCurrentPosition.mockImplementation((success: (position: unknown) => void) =>
+        success({ coords: { latitude: 51.4812345678, longitude: -0.2512345678 } }),
+      );
+      await openBuilder();
+      select(1);
+
+      await click(bButton(1, 'locate'));
+
+      expect(bText(1, '.builder-pin-status')).toBe('Pin placed at 51.48123, -0.25123');
+      expect(geolocation.getCurrentPosition.mock.calls[0]![2]).toMatchObject({ enableHighAccuracy: true });
+      expect(builderMarkers().map((marker) => marker.textContent)).toEqual(['2']);
+      expect(fitBounds).toHaveBeenCalled();
+      expect(selectedCards()).toEqual([1]);
+    });
+
+    it.each([
+      [1, /refused/],
+      [2, /isn't available/],
+      [3, /too long/],
+    ])('says what to do when the position fails with code %s, and places no pin', async (code, words) => {
+      geolocation.getCurrentPosition.mockImplementation((_success: unknown, failure: (error: unknown) => void) => failure({ code }));
+      await openBuilder();
+
+      await click(bButton(0, 'locate'));
+
+      expect(bText(0, '.builder-locate-error')).toMatch(words);
+      expect(visible('builder-form')).toBe(true);
+      expect(bText(0, '.builder-pin-status')).toBe('No pin yet');
+      expect(builderMarkers()).toHaveLength(0);
+    });
+
+    it('clears the message once a pin is placed some other way', async () => {
+      geolocation.getCurrentPosition.mockImplementation((_success: unknown, failure: (error: unknown) => void) => failure({ code: 1 }));
+      await openBuilder();
+      await click(bButton(0, 'locate'));
+
+      tap(...PINS[0]);
+
+      expect(bCard(0).querySelector<HTMLElement>('.builder-locate-error')!.hidden).toBe(true);
+    });
+
+    it('says so in a browser with no geolocation', async () => {
+      Object.defineProperty(navigator, 'geolocation', { value: undefined, configurable: true });
+      await openBuilder();
+
+      await click(bButton(0, 'locate'));
+
+      expect(bText(0, '.builder-locate-error')).toMatch(/can't share its location/);
+    });
+
+    it("pins the checkpoint that asked, even if it moved while the position was found", async () => {
+      let answer: (position: unknown) => void = () => undefined;
+      geolocation.getCurrentPosition.mockImplementation((success: (position: unknown) => void) => {
+        answer = success;
+      });
+      await openBuilder();
+      type('builder-0-name', 'The boathouse');
+      await click(bButton(0, 'locate'));
+
+      await click(bButton(0, 'down'));
+      answer({ coords: { latitude: 51.48, longitude: -0.25 } });
+      await settle();
+
+      expect(names()).toEqual(['', 'The boathouse', '']);
+      expect(bText(0, '.builder-pin-status')).toBe('No pin yet');
+      expect(bText(1, '.builder-pin-status')).toBe('Pin placed at 51.48000, -0.25000');
+    });
+  });
+
+  describe('adding, removing and moving checkpoints', () => {
+    it('adds up to 8 and removes down to 3', async () => {
+      await openBuilder();
+
+      for (let count = 3; count < 8; count += 1) {
+        await click($('builder-add'));
+      }
+      expect($('builder-cards').children).toHaveLength(8);
+      expect(input('builder-add').disabled).toBe(true);
+      expect(selectedCards()).toEqual([7]);
+      expect(document.activeElement).toBe(bField(7, 'name'));
+
+      for (let count = 8; count > 3; count -= 1) {
+        await click(bButton(0, 'remove'));
+      }
+      expect($('builder-cards').children).toHaveLength(3);
+      expect(bButton(0, 'remove').disabled).toBe(true);
+      expect(input('builder-add').disabled).toBe(false);
+    });
+
+    it('moves a checkpoint with everything typed and pinned in it, and the selection stays with it', async () => {
+      await fillHunt();
+      select(0);
+
+      await click(bButton(0, 'down'));
+
+      expect(names()).toEqual(['The bridge', 'The boathouse', 'The pier']);
+      expect(bField(1, 'clue').value).toBe('Clue for The boathouse');
+      expect(bText(1, '.builder-pin-status')).toBe('Pin placed at 51.48000, -0.25000');
+      expect(selectedCards()).toEqual([1]);
+      // The markers are numbered by the new order.
+      expect(markerOf(2).options.title).toBe('2. The boathouse (selected)');
+      expect(document.activeElement).toBe(bButton(1, 'down'));
+
+      await click(bButton(1, 'up'));
+      expect(names()).toEqual(NAMES);
+    });
+
+    it("can't move the first one up, the last one down, or remove below 3", async () => {
+      await openBuilder();
+
+      expect(bButton(0, 'up').disabled).toBe(true);
+      expect(bButton(2, 'down').disabled).toBe(true);
+      expect(bButton(1, 'up').disabled).toBe(false);
+    });
+
+    it('takes a removed checkpoint, and its pin, off the map and selects the card that takes its place', async () => {
+      await fillHunt();
+      await click($('builder-add'));
+      type('builder-3-name', 'The last');
+
+      await click(bButton(0, 'remove'));
+
+      expect(names()).toEqual(['The bridge', 'The pier', 'The last']);
+      expect(builderMarkers().map((marker) => marker.getAttribute('aria-label'))).toEqual(['1. The bridge (selected)', '2. The pier']);
+      expect(selectedCards()).toEqual([0]);
+      // Down to 3, Remove is disabled: focus stays with the card.
+      expect(document.activeElement).toBe(bCard(0));
+    });
+
+    it('selects the one before when the last checkpoint is removed', async () => {
+      await openBuilder();
+      await click($('builder-add'));
+      select(3);
+
+      await click(bButton(3, 'remove'));
+
+      expect(selectedCards()).toEqual([2]);
+    });
+  });
+
+  describe('checking the form before it is sent', () => {
+    it('sends nothing, and says what is wrong under each field, with the first one focused', async () => {
+      await openBuilder();
+      type('builder-0-name', 'The boathouse');
+      type('builder-0-proximity', '19');
+
+      await submit('builder-form');
+
+      expect(server.posts()).toHaveLength(0);
+      expect(text('builder-area-error')).toBe('Enter the area: at least 3 characters.');
+      expect(text('builder-theme-error')).toBe('Enter the theme: at least 3 characters.');
+      expect(text('builder-0-clue-error')).toBe("The clue can't be empty.");
+      expect(text('builder-0-proximity-error')).toBe('Choose a whole number of metres from 20 to 100.');
+      expect(text('builder-1-name-error')).toBe("Enter the place's name.");
+      expect(bCard(0).querySelector('.builder-pin-error')!.textContent).toBe('Place its pin on the map.');
+      expect(bField(0, 'proximity').getAttribute('aria-invalid')).toBe('true');
+      expect(document.activeElement).toBe(input('builder-area'));
+    });
+
+    it('focuses the first card with a problem once the top fields are right', async () => {
+      await fillHunt();
+      type('builder-1-scene', '');
+
+      await submit('builder-form');
+
+      expect(server.posts()).toHaveLength(0);
+      expect(document.activeElement).toBe(bField(1, 'scene'));
+    });
+
+    it('clears a message as soon as its field is typed in', async () => {
+      await openBuilder();
+      await submit('builder-form');
+      expect(visible('builder-area-error')).toBe(true);
+
+      type('builder-area', 'Chiswick');
+
+      expect(visible('builder-area-error')).toBe(false);
+      expect(visible('builder-theme-error')).toBe(true);
+      type('builder-0-name', 'x');
+      expect(visible('builder-0-name-error')).toBe(false);
+    });
+
+    it("counts a text field's characters against its limit", async () => {
+      await openBuilder();
+
+      type('builder-0-clue', 'x'.repeat(301));
+
+      expect(text('builder-0-clue-count')).toBe('301 / 300');
+      expect($('builder-0-clue-count').classList.contains('counter--over')).toBe(true);
+    });
+  });
+
+  describe('sending the hunt', () => {
+    it('posts the hunt to the manual relay with the token, then opens the new draft for review', async () => {
+      await fillHunt();
+
+      await submit('builder-form');
+
+      expect(server.posts()).toEqual([
+        { method: 'POST', url: '/designer/drafts/manual', authorization: `Bearer ${TOKEN}`, body: huntRequest },
+      ]);
+      expect(window.location.search).toBe(`?draft=${DRAFT}`);
+      expect(text('draft-status')).toBe('Ready');
+      expect(visible('draft-review')).toBe(true);
+      expect(text('draft-title')).toBe('Chiswick, London');
+      expect($('cards').children).toHaveLength(3);
+      expect([0, 1, 2].map((index) => cardText(index + 1, '.review-badge'))).toEqual(['To review', 'To review', 'To review']);
+      // Reviewed with the same fields as any draft, with the pins on the route map.
+      expect(input('card-1-clue').value).toBe('Clue for The boathouse');
+      expect(input('card-1-proximity').value).toBe('30');
+      expect(mapMarkers()).toHaveLength(3);
+      // Unlike a designed hunt, a placed one has no polling to do.
+      expect(server.draftReads()).toHaveLength(1);
+    });
+
+    it('says it was placed by hand, with no run, rationale, kind or OpenStreetMap link', async () => {
+      await fillHunt();
+      await submit('builder-form');
+
+      expect(text('draft-elapsed')).toBe('Placed by hand');
+      expect(text('draft-elapsed')).not.toMatch(/turn|\$|Took/);
+      for (const position of [1, 2, 3]) {
+        expect(card(position).querySelector('.card-rationale')).toBeNull();
+        expect(card(position).querySelector('.osm-link')).toBeNull();
+        expect(card(position).querySelector('.card-kind')).toBeNull();
+      }
+      expect(cardText(1, '.card-name')).toBe('1. The boathouse');
+    });
+
+    it('lists the draft as placed by hand', async () => {
+      await fillHunt();
+      await submit('builder-form');
+
+      expect(items('drafts')[0]).toContain('Placed by hand');
+      expect(items('drafts')[0]).not.toContain('$');
+    });
+
+    it('starts the builder again, empty, once the draft is made', async () => {
+      await fillHunt();
+      await submit('builder-form');
+
+      expect(input('builder-area').value).toBe('');
+      expect(names()).toEqual(['', '', '']);
+      expect(builderMarkers()).toHaveLength(0);
+      expect(text('builder-loop')).toBe('Place two pins to see the loop.');
+    });
+
+    it('sends only once while it is on its way', async () => {
+      await fillHunt();
+
+      const first = submit('builder-form');
+      await submit('builder-form');
+      await first;
+
+      expect(server.posts()).toHaveLength(1);
+    });
+
+    it('goes on through review and publish like any draft', async () => {
+      await fillHunt();
+      await submit('builder-form');
+      for (const position of [1, 2, 3]) {
+        await clickCard(position, 'accepted');
+      }
+      expect(input('publish-button').disabled).toBe(false);
+    });
+  });
+
+  describe('when the game-server turns the hunt down', () => {
+    const problems = {
+      status: 422,
+      body: {
+        detail: 'draft problems',
+        problems: [
+          { code: 'names_place', position: 2, message: 'Checkpoint 2\'s clue gives the place away ("bridge"); describe it without its name' },
+          { code: 'too_close', position: 3, message: 'Checkpoints 2 and 3 are 90 m apart; keep them at least 150 m apart' },
+          { code: 'route_too_long', position: null, message: 'The loop is 12 km; keep it to 10 km' },
+        ],
+      },
+    };
+
+    it("shows each problem on its checkpoint's card and field, and the rest above the button, and keeps what was typed", async () => {
+      await fillHunt();
+      server.state.manualAnswer = problems;
+
+      await submit('builder-form');
+
+      expect(window.location.search).toBe('');
+      expect(visible('builder-error')).toBe(true);
+      expect(text('builder-error-text')).toBe("The game-server didn't accept this hunt:");
+      expect(items('builder-error-lines')).toEqual(['The loop is 12 km; keep it to 10 km']);
+      expect(text('builder-1-clue-error')).toBe('Checkpoint 2\'s clue gives the place away ("bridge"); describe it without its name');
+      expect(bField(1, 'clue').getAttribute('aria-invalid')).toBe('true');
+      expect(bCard(2).querySelector('.builder-pin-error')!.textContent).toBe('Checkpoints 2 and 3 are 90 m apart; keep them at least 150 m apart');
+      expect(visible('builder-0-clue-error')).toBe(false);
+      expect(names()).toEqual(NAMES);
+      expect(builderMarkers()).toHaveLength(3);
+      expect(input('builder-button').disabled).toBe(false);
+    });
+
+    it('lets it be fixed and sent again', async () => {
+      await fillHunt();
+      server.state.manualAnswer = problems;
+      await submit('builder-form');
+
+      type('builder-1-clue', 'Where the road crosses the water');
+      expect(visible('builder-1-clue-error')).toBe(false);
+      server.state.manualAnswer = null;
+      await submit('builder-form');
+
+      expect(server.posts()).toHaveLength(2);
+      expect(window.location.search).toBe(`?draft=${DRAFT}`);
+      expect(visible('builder-error')).toBe(false);
+    });
+
+    it('forgets the positions of problems when the checkpoints change order', async () => {
+      await fillHunt();
+      server.state.manualAnswer = problems;
+      await submit('builder-form');
+
+      await click(bButton(1, 'up'));
+
+      expect(visible('builder-1-clue-error')).toBe(false);
+      expect(visible('builder-error')).toBe(false);
+    });
+
+    it('says when the game-server cannot be reached, and keeps the hunt', async () => {
+      await fillHunt();
+      server.state.offline = true;
+
+      await submit('builder-form');
+
+      expect(text('builder-error-text')).toBe('No connection to the game server.');
+      expect(names()).toEqual(NAMES);
+    });
+
+    it('turns away an account that is not an organiser, with nothing left on screen', async () => {
+      await fillHunt();
+      server.state.forbidden = true;
+
+      await submit('builder-form');
+
+      expect(visible('workspace')).toBe(false);
+      expect(text('sign-in-error')).toBe("This account isn't an organiser.");
+      expect(input('builder-area').value).toBe('');
+      expect(names()).toEqual(['', '', '']);
+      expect(builderMarkers()).toHaveLength(0);
+    });
+  });
+
+  describe('Edit in builder', () => {
+    it('is offered on a ready draft placed by hand', async () => {
+      await fillHunt();
+      await submit('builder-form');
+
+      expect(visible('edit-in-builder')).toBe(true);
+    });
+
+    it('is not offered on a designed one', async () => {
+      await openReadyDraft();
+
+      expect(visible('edit-in-builder')).toBe(false);
+    });
+
+    it('is not offered on a published one', async () => {
+      await fillHunt();
+      await submit('builder-form');
+      server.drafts.get(DRAFT)!.status = 'published';
+      await reloadPage(`/designer?draft=${DRAFT}`);
+
+      expect(visible('edit-in-builder')).toBe(false);
+    });
+
+    it('opens the builder filled in from the draft, with its pins, and sending it makes a new draft', async () => {
+      await fillHunt();
+      await submit('builder-form');
+      await clickCard(2, 'rejected');
+      server.state.nextId = SECOND;
+
+      await click($('edit-in-builder'));
+
+      expect(visible('builder-form')).toBe(true);
+      expect(visible('design-form')).toBe(false);
+      expect(input('builder-area').value).toBe('Chiswick, London');
+      expect(input('builder-theme').value).toBe('Riverside pubs');
+      expect(input('builder-max-walk-km').value).toBe('10');
+      expect(names()).toEqual(NAMES);
+      expect(bField(2, 'pose').value).toBe('Pose for The pier');
+      expect(builderMarkers()).toHaveLength(3);
+      expect(fitBounds).toHaveBeenCalled();
+      expect(document.activeElement).toBe(input('builder-area'));
+
+      select(1);
+      type('builder-1-name', 'The footbridge');
+      tap(51.486, -0.25);
+      await submit('builder-form');
+
+      expect(server.posts()).toHaveLength(2);
+      expect(server.posts()[1]!.body).toEqual({
+        ...huntRequest,
+        checkpoints: [
+          huntRequest.checkpoints[0],
+          { ...huntRequest.checkpoints[1], name: 'The footbridge', location: { lat: 51.486, long: -0.25 } },
+          huntRequest.checkpoints[2],
+        ],
+      });
+      expect(window.location.search).toBe(`?draft=${SECOND}`);
+      // The first draft is as it was, review and all.
+      expect(server.drafts.get(DRAFT)!.status).toBe('ready');
+      expect(items('drafts')).toHaveLength(2);
+      // The new draft starts again: every checkpoint pending.
+      expect([1, 2, 3].map((position) => cardText(position, '.review-badge'))).toEqual(['To review', 'To review', 'To review']);
+    });
+  });
+
+  describe('privacy', () => {
+    it('writes nothing of the hunt to storage, the URL or the console, and a reload starts again', async () => {
+      geolocation.getCurrentPosition.mockImplementation((success: (position: unknown) => void) =>
+        success({ coords: { latitude: 51.4812345678, longitude: -0.2512345678 } }),
+      );
+      await fillHunt();
+      await click(bButton(0, 'locate'));
+      await submit('builder-form');
+      await click($('edit-in-builder'));
+
+      expect(localSetItem).not.toHaveBeenCalled();
+      expect(localStorage).toHaveLength(0);
+      expect(sessionStorage).toHaveLength(0);
+      expect(window.location.search).toBe(`?draft=${DRAFT}`);
+      for (const secret of ['Clue for The boathouse', 'Scene for The boathouse', '51.48', '-0.25']) {
+        expect(window.location.href).not.toContain(secret);
+      }
+      for (const spy of logged) {
+        expect(spy).not.toHaveBeenCalled();
+      }
+
+      await reloadPage('/designer');
+      await chooseMode('manual');
+      expect(input('builder-area').value).toBe('');
+      expect(names()).toEqual(['', '', '']);
+    });
   });
 });
 

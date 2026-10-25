@@ -7,6 +7,10 @@
 // Clerk session token (authorised-fetch.js), as `Authorization: Bearer
 // <token>`. Nothing is typed, and nothing about the sign-in is stored here.
 //
+// An organiser can also place a hunt's checkpoints by hand in the builder
+// (issue #78): a form and a map, kept in memory only, whose draft then goes
+// through the same review and publish screens.
+//
 // A draft's clues, scenes and coordinates are the answers to its hunt. They
 // are kept in memory and on screen only: never stored, never logged, and
 // never in the URL, which holds a draft's id and nothing else. The same goes
@@ -16,6 +20,13 @@
 import { accountHref, signInPrompt } from './account-logic.js';
 import { accountStatus, authorisedFetch } from './authorised-fetch.js';
 import {
+  addCheckpoint,
+  BUILDER_LIMITS,
+  builderError,
+  builderFromDraft,
+  builderLoopLine,
+  builderMap,
+  BY_HAND_WORDS,
   changedFields,
   CHECKPOINT_LIMITS,
   counter,
@@ -30,8 +41,12 @@ import {
   formFromCheckpoint,
   formFromRequest,
   isDraftId,
+  isManual,
   isRunning,
   LIST_POLL_MS,
+  locationErrorText,
+  moveCheckpoint,
+  newBuilder,
   newestFirst,
   problemLines,
   progressLines,
@@ -42,6 +57,7 @@ import {
   PUBLISH_LIMITS,
   publishReadiness,
   readDraftId,
+  removeCheckpoint,
   requestLine,
   REVIEW_WORDS,
   reviewCards,
@@ -52,16 +68,19 @@ import {
   runningDraftId,
   statusLabel,
   TEXT_FIELDS,
+  toPin,
+  validateBuilder,
   validateDesign,
   validateEdit,
   validatePublish,
 } from './designer-logic.js';
-import { createRouteMap } from './designer-map.js';
+import { createBuilderMap, createRouteMap } from './designer-map.js';
 import { clockOffset } from './game-logic.js';
 
 const REQUEST_TIMEOUT_MS = 15000;
 const TICK_MS = 1000;
 const COPIED_MS = 2000;
+const LOCATION_TIMEOUT_MS = 15000;
 const HIGHLIGHT_MS = 2500;
 
 const el = (id) => document.getElementById(id);
@@ -204,6 +223,14 @@ function postDesign(request) {
   });
 }
 
+function postManual(request) {
+  return callRelay('/designer/drafts/manual', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+}
+
 function patchCheckpoint(id, position, edit) {
   return callRelay(`/designer/drafts/${encodeURIComponent(id)}/checkpoints/${position}`, {
     method: 'PATCH',
@@ -283,6 +310,8 @@ function showGate(message, link) {
   listError = '';
   forgetPublication();
   resetPublishForm();
+  // The builder's places, clues and scenes are answers too.
+  resetBuilder();
   if (confirmDialog.open) {
     confirmDialog.close('cancel');
   }
@@ -323,7 +352,7 @@ function renderList() {
         make('span', 'draft-link-area', line.area),
       );
       link.append(head, make('span', 'draft-link-theme', line.theme));
-      const meta = [line.when, line.cost].filter(Boolean).join(' · ');
+      const meta = [line.when, line.byHand ? BY_HAND_WORDS : line.cost].filter(Boolean).join(' · ');
       if (meta) {
         link.append(make('span', 'draft-link-meta', meta));
       }
@@ -832,12 +861,542 @@ el('design-error-link').addEventListener('click', (event) => {
 
 // Try again: the form, filled in with the failed draft's request.
 el('try-again').addEventListener('click', () => {
+  setMode('agent');
   fillForm(formFromRequest(draft?.request));
   showFieldErrors({});
   showDesignError('', null);
   el('design-note').hidden = false;
   designForm.scrollIntoView?.({ block: 'start' });
   designBtn.focus();
+});
+
+// --- the hunt builder -----------------------------------------------------------------
+// The organiser places the checkpoints (issue #78). `builder` is the one copy
+// of what's typed and pinned; the cards are rebuilt when a checkpoint is
+// added, removed or moved, and updated in place otherwise, so typing is never
+// interrupted. Nothing is written to storage: a reload starts again.
+
+const builderForm = el('builder-form');
+const builderCardsEl = el('builder-cards');
+const builderFields = { area: el('builder-area'), theme: el('builder-theme'), maxWalkKm: el('builder-max-walk-km') };
+
+/** @type {import('./designer-logic.js').Builder} */
+let builder = newBuilder();
+/** The index of the checkpoint whose pin a tap on the map places. */
+let builderSelected = 0;
+/** @type {import('./designer-logic.js').BuilderErrors | null} */
+let builderErrors = null;
+/** @type {import('./designer-logic.js').BuilderError | null} */
+let builderServer = null;
+/** What went wrong finding the device's position, by checkpoint. */
+const locateMessages = new WeakMap();
+let builderSending = false;
+/**
+ * The builder's map, made the first time the builder is shown (it has to be
+ * on screen for that): null when Leaflet didn't load.
+ *
+ * @type {import('./designer-map.js').BuilderMap | null | undefined}
+ */
+let builderMapView;
+let builderTilesFailed = false;
+
+/** @param {'agent' | 'manual'} mode */
+function setMode(mode) {
+  const manual = mode === 'manual';
+  /** @type {HTMLInputElement} */ (document.querySelector(`input[name="design-mode"][value="${mode}"]`)).checked = true;
+  designForm.hidden = manual;
+  builderForm.hidden = !manual;
+  if (manual) {
+    renderBuilder(true);
+  }
+}
+
+for (const radio of document.querySelectorAll('input[name="design-mode"]')) {
+  radio.addEventListener('change', (event) => setMode(event.target.value));
+}
+
+const builderId = (index, field) => `builder-${index}-${field}`;
+
+const MAP_UNAVAILABLE_BUILDER = "The map couldn't load, so pins can't be placed here. Try again later, or use your location.";
+
+function markInvalid(element, invalid) {
+  if (invalid) {
+    element.setAttribute('aria-invalid', 'true');
+  } else {
+    element.removeAttribute('aria-invalid');
+  }
+}
+
+/**
+ * @param {number} index
+ * @param {string} field
+ * @returns {string[]} what's wrong with a field: the page's own check, and the game-server's problems
+ */
+function builderMessages(index, field) {
+  const own = builderErrors?.cards[index]?.[field];
+  return [...(own ? [own] : []), ...(builderServer?.cards[index]?.[field] ?? [])];
+}
+
+/** One checkpoint's card: its fields are filled in here, once per rebuild. */
+function buildBuilderCard(checkpoint, index) {
+  const li = make('li', 'card builder-card');
+  li.dataset.index = String(index);
+  // Focused when its marker is tapped.
+  li.tabIndex = -1;
+
+  const head = make('div', 'card-head');
+  head.append(make('h4', 'card-name', `Checkpoint ${index + 1}`), make('span', 'review-badge builder-selected', 'Selected'));
+  li.append(head);
+
+  const field = (name, label, control, hint) => {
+    const id = builderId(index, name);
+    const labelEl = /** @type {HTMLLabelElement} */ (make('label', 'field-label', label));
+    labelEl.htmlFor = id;
+    control.id = id;
+    control.dataset.field = name;
+    control.setAttribute('aria-describedby', `${id}-hint ${id}-error`);
+    const hintEl = make('p', 'field-hint', hint);
+    hintEl.id = `${id}-hint`;
+    const error = make('p', 'field-error');
+    error.id = `${id}-error`;
+    error.hidden = true;
+    return [labelEl, control, hintEl, error];
+  };
+
+  const name = /** @type {HTMLInputElement} */ (make('input'));
+  Object.assign(name, { type: 'text', value: checkpoint.name, maxLength: BUILDER_LIMITS.name.max, autocomplete: 'off' });
+  li.append(...field('name', 'Place name', name, 'For you, and for the referee. A clue or pose must not give it away.'));
+
+  for (const { field: key, label, hint, rows } of CARD_FIELDS) {
+    const area = /** @type {HTMLTextAreaElement} */ (make('textarea'));
+    area.rows = rows;
+    area.value = checkpoint[key];
+    const parts = field(key, label, area, hint);
+    const count = make('span', 'counter');
+    count.id = `${builderId(index, key)}-count`;
+    parts[2].append(count);
+    parts[2].classList.add('field-foot');
+    li.append(...parts);
+  }
+
+  const { min, max } = CHECKPOINT_LIMITS.proximity;
+  const radius = /** @type {HTMLInputElement} */ (make('input', 'radius'));
+  Object.assign(radius, { type: 'number', inputMode: 'numeric', min: String(min), max: String(max), step: '1', value: checkpoint.proximity });
+  li.append(...field('proximity', 'Check-in radius (m)', radius, `${min} to ${max} m around the pin: how close a team must be to check in.`));
+
+  // The pin: where it is, and how to place it.
+  const pin = make('div', 'builder-pin');
+  pin.append(make('p', 'builder-pin-status'), make('p', 'field-hint builder-pin-hint'));
+  const pinError = make('p', 'field-error builder-pin-error');
+  pinError.setAttribute('role', 'alert');
+  pinError.hidden = true;
+  const locateError = make('p', 'message message--error builder-locate-error');
+  locateError.setAttribute('role', 'alert');
+  locateError.hidden = true;
+  li.append(pin, pinError, locateError);
+
+  const actions = make('div', 'card-actions');
+  actions.append(
+    makeButton('locate', 'Use my location', 'button-secondary builder-locate'),
+    makeButton('up', 'Move up', 'button-secondary'),
+    makeButton('down', 'Move down', 'button-secondary'),
+    makeButton('remove', 'Remove', 'button-secondary'),
+  );
+  for (const button of actions.querySelectorAll('button')) {
+    button.setAttribute('aria-label', `${button.textContent}: checkpoint ${index + 1}`);
+  }
+  li.append(actions);
+  return li;
+}
+
+/** Brings one card up to date with `builder`: the pin, the selection, counters, errors and buttons. */
+function refreshBuilderCard(index) {
+  const li = /** @type {HTMLElement | undefined} */ (builderCardsEl.children[index]);
+  const checkpoint = builder.checkpoints[index];
+  if (!li || !checkpoint) {
+    return;
+  }
+  const selected = index === builderSelected;
+  li.classList.toggle('builder-card--selected', selected);
+  li.querySelector('.builder-selected').hidden = !selected;
+
+  const { location } = checkpoint;
+  li.querySelector('.builder-pin-status').textContent = location
+    ? `Pin placed at ${location.lat.toFixed(5)}, ${location.long.toFixed(5)}`
+    : 'No pin yet';
+  const hint = li.querySelector('.builder-pin-hint');
+  hint.textContent = selected ? `Tap the map to ${location ? 'move' : 'place'} this pin, or drag it.` : 'Select this checkpoint to place its pin.';
+
+  for (const key of ['name', ...TEXT_FIELDS, 'proximity']) {
+    const messages = builderMessages(index, key);
+    const error = el(`${builderId(index, key)}-error`);
+    error.textContent = messages.join(' ');
+    error.hidden = messages.length === 0;
+    markInvalid(el(builderId(index, key)), messages.length > 0);
+  }
+  for (const key of TEXT_FIELDS) {
+    const { text, over } = counter(key, checkpoint[key]);
+    const count = el(`${builderId(index, key)}-count`);
+    count.textContent = text;
+    count.classList.toggle('counter--over', over);
+  }
+  const pinMessages = [...builderMessages(index, 'location'), ...builderMessages(index, 'card')];
+  const pinError = li.querySelector('.builder-pin-error');
+  pinError.textContent = pinMessages.join(' ');
+  pinError.hidden = pinMessages.length === 0;
+  const locateMessage = locateMessages.get(checkpoint) ?? '';
+  const locateError = li.querySelector('.builder-locate-error');
+  locateError.textContent = locateMessage;
+  locateError.hidden = !locateMessage;
+
+  const last = builder.checkpoints.length - 1;
+  li.querySelector('[data-action="up"]').disabled = index === 0;
+  li.querySelector('[data-action="down"]').disabled = index === last;
+  li.querySelector('[data-action="remove"]').disabled = builder.checkpoints.length <= BUILDER_LIMITS.checkpoints.min;
+}
+
+/** Everything that depends on the pins: the loop line and the map. */
+function renderBuilderRoute(fit = false) {
+  const loop = builderLoopLine(builder);
+  const loopEl = el('builder-loop');
+  loopEl.textContent = loop.text;
+  loopEl.classList.toggle('builder-loop--over', loop.over);
+  if (builderMapView === undefined && !builderForm.hidden) {
+    builderMapView = createBuilderMap(el('builder-map'), {
+      onPlace: (lat, long) => placePin(builderSelected, toPin(lat, long)),
+      onMove: (index, lat, long) => placePin(index, toPin(lat, long)),
+      onSelect: (index) => {
+        selectCheckpoint(index);
+        const li = builderCardsEl.children[index];
+        li?.scrollIntoView?.({ block: 'start' });
+        li?.focus({ preventScroll: true });
+      },
+      onTiles: (loaded) => {
+        builderTilesFailed = !loaded;
+        renderBuilderMapNote();
+      },
+    });
+    el('builder-map').hidden = builderMapView === null;
+  }
+  builderMapView?.draw(builderMap(builder, builderSelected), fit);
+  renderBuilderMapNote();
+}
+
+function renderBuilderMapNote() {
+  showMessage('builder-map-note', builderMapView === null ? MAP_UNAVAILABLE_BUILDER : builderTilesFailed ? TILES_FAILED : '');
+}
+
+/**
+ * Fills the form from `builder`, and rebuilds the cards.
+ *
+ * @param {boolean} [fit] whether to fit the map to the pins
+ */
+function renderBuilder(fit = false) {
+  builderFields.area.value = builder.area;
+  builderFields.theme.value = builder.theme;
+  builderFields.maxWalkKm.value = builder.maxWalkKm;
+  renderBuilderCards();
+  renderBuilderFieldErrors();
+  renderBuilderRoute(fit);
+}
+
+function renderBuilderCards() {
+  builderSelected = Math.min(builderSelected, builder.checkpoints.length - 1);
+  builderCardsEl.replaceChildren(...builder.checkpoints.map(buildBuilderCard));
+  for (let index = 0; index < builder.checkpoints.length; index += 1) {
+    refreshBuilderCard(index);
+  }
+  el('builder-add').disabled = builder.checkpoints.length >= BUILDER_LIMITS.checkpoints.max;
+}
+
+function renderBuilderFieldErrors() {
+  const messages = {
+    area: builderErrors?.area,
+    theme: builderErrors?.theme,
+    maxWalkKm: builderErrors?.maxWalkKm,
+  };
+  const ids = { area: 'builder-area', theme: 'builder-theme', maxWalkKm: 'builder-max-walk-km' };
+  for (const [name, id] of Object.entries(ids)) {
+    const message = messages[name] ?? '';
+    el(`${id}-error`).textContent = message;
+    el(`${id}-error`).hidden = !message;
+    markInvalid(el(id), Boolean(message));
+  }
+  el('builder-list-error').textContent = builderErrors?.checkpoints ?? '';
+  el('builder-list-error').hidden = !builderErrors?.checkpoints;
+  showBuilderError(builderServer?.message ?? '', builderServer?.lines ?? []);
+}
+
+/**
+ * @param {string} message
+ * @param {string[]} lines
+ */
+function showBuilderError(message, lines) {
+  el('builder-error-text').textContent = message;
+  el('builder-error-lines').replaceChildren(...lines.map((line) => make('li', '', line)));
+  el('builder-error').hidden = !message;
+}
+
+/** Back to an empty builder, with nothing of the old one left on screen or on the map. */
+function resetBuilder() {
+  builder = newBuilder();
+  builderSelected = 0;
+  builderErrors = null;
+  builderServer = null;
+  renderBuilder(false);
+}
+
+/** The checkpoints have changed order or number: the positions in any errors no longer hold. */
+function structureChanged() {
+  builderErrors = null;
+  builderServer = null;
+  renderBuilder(false);
+}
+
+/** @param {number} index */
+function selectCheckpoint(index) {
+  if (index === builderSelected || !builder.checkpoints[index]) {
+    return;
+  }
+  builderSelected = index;
+  for (let at = 0; at < builder.checkpoints.length; at += 1) {
+    refreshBuilderCard(at);
+  }
+  renderBuilderRoute();
+}
+
+/**
+ * Drops, or moves, a checkpoint's pin.
+ *
+ * @param {number} index
+ * @param {{ lat: number, long: number } | null} pin
+ * @param {boolean} [fit] whether to bring the map to it
+ */
+function placePin(index, pin, fit = false) {
+  const checkpoint = builder.checkpoints[index];
+  if (!checkpoint || !pin) {
+    return;
+  }
+  checkpoint.location = pin;
+  locateMessages.delete(checkpoint);
+  // What was wrong with the pin may not be any more.
+  if (builderErrors?.cards[index]) {
+    delete builderErrors.cards[index].location;
+  }
+  if (builderServer?.cards[index]) {
+    builderServer.cards[index].card = [];
+  }
+  refreshBuilderCard(index);
+  renderBuilderRoute(fit);
+}
+
+/** Use my location: pins the checkpoint where the organiser stands. */
+function locateCheckpoint(index) {
+  const checkpoint = builder.checkpoints[index];
+  if (!checkpoint) {
+    return;
+  }
+  selectCheckpoint(index);
+  const fail = (code) => {
+    if (builder.checkpoints.includes(checkpoint)) {
+      locateMessages.set(checkpoint, locationErrorText(code));
+      refreshBuilderCard(builder.checkpoints.indexOf(checkpoint));
+    }
+  };
+  if (!navigator.geolocation) {
+    fail(0);
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      // The card may have moved, or gone, while the position was being found.
+      const at = builder.checkpoints.indexOf(checkpoint);
+      const pin = toPin(position.coords.latitude, position.coords.longitude);
+      if (at >= 0 && pin) {
+        placePin(at, pin, true);
+      } else if (at >= 0) {
+        fail(-1);
+      }
+    },
+    (error) => fail(error.code),
+    { enableHighAccuracy: true, timeout: LOCATION_TIMEOUT_MS, maximumAge: 0 },
+  );
+}
+
+for (const [name, field] of Object.entries(builderFields)) {
+  field.addEventListener('input', () => {
+    builder[name] = field.value;
+    if (builderErrors?.[name]) {
+      delete builderErrors[name];
+      renderBuilderFieldErrors();
+    }
+    // The longest walk changes whether the loop is too long.
+    if (name === 'maxWalkKm') {
+      renderBuilderRoute();
+    }
+  });
+}
+
+builderCardsEl.addEventListener('input', (event) => {
+  const field = event.target?.dataset?.field;
+  const index = Number(event.target?.closest?.('li.builder-card')?.dataset.index);
+  const checkpoint = builder.checkpoints[index];
+  if (!checkpoint || !field) {
+    return;
+  }
+  checkpoint[field] = event.target.value;
+  // What was wrong with this field may not be any more: the next Create draft checks it again.
+  if (builderErrors?.cards[index]?.[field]) {
+    delete builderErrors.cards[index][field];
+  }
+  if (builderServer?.cards[index]?.[field]) {
+    builderServer.cards[index][field] = [];
+  }
+  refreshBuilderCard(index);
+  if (field === 'name') {
+    // Its marker's title.
+    renderBuilderRoute();
+  }
+});
+
+// Whichever card is touched or tabbed to is the one a tap on the map pins.
+builderCardsEl.addEventListener('focusin', (event) => {
+  selectCheckpoint(Number(event.target?.closest?.('li.builder-card')?.dataset.index));
+});
+
+/** Focuses a card's button again after the cards were rebuilt. */
+function focusBuilder(index, action) {
+  /** @type {HTMLElement | null} */ (
+    builderCardsEl.querySelector(`li[data-index="${index}"] [data-action="${action}"]:not(:disabled)`) ??
+      builderCardsEl.querySelector(`li[data-index="${index}"]`)
+  )?.focus();
+}
+
+builderCardsEl.addEventListener('click', (event) => {
+  const button = event.target?.closest?.('button[data-action]');
+  const index = Number(button?.closest('li.builder-card')?.dataset.index);
+  if (!button || !builder.checkpoints[index]) {
+    return;
+  }
+  const { action } = button.dataset;
+  if (action === 'locate') {
+    locateCheckpoint(index);
+    return;
+  }
+  if (action === 'remove') {
+    if (builder.checkpoints.length <= BUILDER_LIMITS.checkpoints.min) {
+      return;
+    }
+    builder.checkpoints = removeCheckpoint(builder.checkpoints, index);
+    // Focus, and so the selection, goes to the card that took its place.
+    builderSelected = Math.min(index, builder.checkpoints.length - 1);
+    structureChanged();
+    focusBuilder(builderSelected, 'remove');
+    return;
+  }
+  const by = action === 'up' ? -1 : 1;
+  builder.checkpoints = moveCheckpoint(builder.checkpoints, index, by);
+  // The selection follows the checkpoint that was moved.
+  builderSelected = index + by;
+  structureChanged();
+  focusBuilder(builderSelected, action);
+});
+
+el('builder-add').addEventListener('click', () => {
+  if (builder.checkpoints.length >= BUILDER_LIMITS.checkpoints.max) {
+    return;
+  }
+  builder.checkpoints = addCheckpoint(builder.checkpoints);
+  builderSelected = builder.checkpoints.length - 1;
+  structureChanged();
+  el(builderId(builderSelected, 'name')).focus();
+});
+
+function setBuilderSending(value) {
+  builderSending = value;
+  el('builder-button').disabled = value;
+  el('builder-button').textContent = value ? 'Creating…' : 'Create draft';
+}
+
+/** Focuses the first thing the organiser has to fix. */
+function focusFirstBuilderProblem() {
+  for (const [name, field] of Object.entries(builderFields)) {
+    if (builderErrors?.[name]) {
+      field.focus();
+      return;
+    }
+  }
+  for (let index = 0; index < builder.checkpoints.length; index += 1) {
+    const field = ['name', ...TEXT_FIELDS, 'proximity'].find((key) => builderMessages(index, key).length > 0);
+    if (field) {
+      el(builderId(index, field)).focus();
+      return;
+    }
+    if (builderMessages(index, 'location').length + builderMessages(index, 'card').length > 0) {
+      focusBuilder(index, 'locate');
+      return;
+    }
+  }
+}
+
+builderForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (builderSending) {
+    return;
+  }
+  const { request, errors } = validateBuilder(builder);
+  builderErrors = errors;
+  builderServer = null;
+  for (let index = 0; index < builder.checkpoints.length; index += 1) {
+    refreshBuilderCard(index);
+  }
+  renderBuilderFieldErrors();
+  if (!request) {
+    focusFirstBuilderProblem();
+    return;
+  }
+
+  setBuilderSending(true);
+  const { status, body } = await postManual(request);
+  setBuilderSending(false);
+  if (!signedIn) {
+    return;
+  }
+
+  const id = body && typeof body === 'object' && 'id' in body ? body.id : null;
+  if (status === 201 && isDraftId(id)) {
+    // The draft has it now; the builder starts again for the next one.
+    resetBuilder();
+    openDraft(id, true);
+    void refreshList();
+    return;
+  }
+
+  const error = builderError(status, body, request.checkpoints.length);
+  if (error.signInAgain || error.forbidden) {
+    endAccess(error);
+    return;
+  }
+  builderServer = error;
+  for (let index = 0; index < builder.checkpoints.length; index += 1) {
+    refreshBuilderCard(index);
+  }
+  renderBuilderFieldErrors();
+  el('builder-error').scrollIntoView?.({ block: 'center' });
+});
+
+// Edit in builder: a new builder filled in from a ready hand-placed draft.
+el('edit-in-builder').addEventListener('click', () => {
+  if (!isManual(draft)) {
+    return;
+  }
+  builder = builderFromDraft(draft);
+  builderSelected = 0;
+  builderErrors = null;
+  builderServer = null;
+  setMode('manual');
+  builderForm.scrollIntoView?.({ block: 'start' });
+  builderFields.area.focus();
 });
 
 // --- reviewing a ready draft --------------------------------------------------------
@@ -1052,6 +1611,7 @@ function unsavedPositions() {
 function renderReview() {
   const ready = draft?.status === 'ready';
   el('draft-review').hidden = !ready;
+  el('edit-in-builder-block').hidden = !(ready && isManual(draft));
   const list = ready ? reviewCards(draft) : [];
   const key = ready ? `${draft.id}:${list.map((card) => card.position).join(',')}` : '';
   if (key !== cardsKey) {
