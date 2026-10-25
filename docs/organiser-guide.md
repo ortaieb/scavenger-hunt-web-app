@@ -39,6 +39,39 @@ the game-server to turn it on.
 By default a design stops after 5 minutes and spends at most $1; the
 game-server's settings can change both.
 
+## Placing the checkpoints yourself
+
+Rather than leave the choice to the designer, choose **Place them myself** at
+the top of *New design*. You lay out the route, and the draft comes back
+ready to review at once, with no wait.
+
+1. Fill in the **area**, the **theme** and the **longest walk** (0.5 to 10 km;
+   the default is 10).
+2. Fill in each checkpoint, in route order: the **place name**, the **clue**,
+   the **scene** (for the referee only), the **pose** and the **check-in
+   radius** (20 to 100 m; the default is 30). You need 3 to 8. **Add a
+   checkpoint**, **Remove** one, or **Move up** and **Move down** to reorder
+   them.
+3. Pin each one. Select a checkpoint by tapping its card, then **tap the
+   map** to drop its pin. Drag a pin to adjust it. If you're standing at the
+   place, **Use my location** pins it there. The browser asks for permission
+   the first time.
+4. Watch the **loop** under the map: its length so far against your longest
+   walk.
+5. **Create draft.** The game-server checks the hunt against the same rules
+   as a designed one (a clue mustn't name the place, pins mustn't be too
+   close, the loop must fit the longest walk) and shows each problem on the
+   checkpoint it's about. Fix it and send again.
+
+Then it goes through *Reviewing a draft* and *Publishing* below like any
+other. Every checkpoint starts as *To review*, and the draft says *Placed by
+hand* instead of a run's time and cost.
+
+The builder isn't saved: reloading the page starts it again. A pin can't move
+once the draft exists, so to change one, open a ready draft you placed by hand
+and choose **Edit in builder**. It opens the builder filled in from the draft,
+and sending it makes a **new** draft; the old one stays as it was.
+
 ## Following a design
 
 While it runs, the draft shows *Designing…*, how long it has been running,
